@@ -31,6 +31,7 @@ export interface ChildInvocationOptions {
   isResume?: boolean;
   runId: string;
   parentSessionId: string;
+  additionalArgs?: readonly string[];
   baseEnv?: NodeJS.ProcessEnv;
 }
 
@@ -54,6 +55,7 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
   if (agent.tools.length === 0) args.push("--no-tools");
   else args.push("--tools", agent.tools.join(","));
   args.push("--model", agent.model, "--thinking", agent.thinking);
+  args.push(...(options.additionalArgs ?? []));
   args.push(
     `@${options.taskPath}`,
     options.isResume

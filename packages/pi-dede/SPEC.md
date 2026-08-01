@@ -94,7 +94,7 @@ Validation completes before temporary files, permits, or child processes are cre
 
 Effective thinking precedence is explicit request, profile sidecar configuration, then built-in profile default. The master's thinking level is not inherited.
 
-Effective model precedence is explicit request, profile sidecar configuration, then master model. A provider registered only through an extension is rejected because child extensions are disabled. The error tells the caller how to configure a compatible model and includes a bounded list of catalog candidates.
+Effective model precedence is explicit request, profile sidecar configuration, then master model. Children do not inherit the master's extensions. A provider registered through an extension is accepted only when `additionalArgs` explicitly loads a child extension with `-e`/`--extension`; otherwise it is rejected before launch. The error tells the caller how to load the extension or configure a compatible model and includes a bounded list of catalog candidates.
 
 Effective environment precedence is inherited master process environment, global profile sidecar environment, trusted-project profile sidecar environment, explicit `agents[].env`, then pi-dede's internal control fields. Profile environments merge by variable name instead of replacing the complete map.
 
@@ -103,7 +103,7 @@ Sidecar configuration paths:
 - `~/.pi/agent/pi-dede.json`
 - `.pi/pi-dede.json` for trusted projects only
 
-Only `profiles.<profile>.model`, `profiles.<profile>.thinking`, and `profiles.<profile>.env` are accepted. Environment maps contain portable string keys and string values. Session/delegation control names and process-startup variables (`PATH`, Node/Bun options, dynamic-loader variables, and `BASH_ENV`) are protected from overrides.
+The config accepts `profiles.<profile>.model`, `profiles.<profile>.thinking`, `profiles.<profile>.env`, and a top-level `additionalArgs` string array. Extra arguments are inserted after pi-dede's built-in child options and before the task prompt; a trusted project's array replaces the global array. Environment maps contain portable string keys and string values. Session/delegation control names and process-startup variables (`PATH`, Node/Bun options, dynamic-loader variables, and `BASH_ENV`) are protected from overrides.
 
 ## 5. Tool capabilities
 

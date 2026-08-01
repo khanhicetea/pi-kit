@@ -252,7 +252,18 @@ describe("semantic validation", () => {
     expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", model: "other/small" }] }), {
       ...context,
       extensionProviderIds: ["other"],
-    })).toThrow(/configure profiles\.custom\.model.*test\/main/);
+    })).toThrow(/additionalArgs.*configure profiles\.custom\.model.*test\/main/);
+  });
+
+  it("allows an extension-provider model when an extension is explicitly loaded in children", () => {
+    const [agent] = validateAndResolve(valid({
+      agents: [{ id: "a", goal: "x", model: "other/small" }],
+    }), {
+      ...context,
+      extensionProviderIds: ["other"],
+      extensionProvidersAvailableToChild: true,
+    });
+    expect(agent.model).toBe("other/small");
   });
 });
 

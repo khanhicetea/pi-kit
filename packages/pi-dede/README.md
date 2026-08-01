@@ -142,7 +142,7 @@ Private child sessions use mode-`0600` files under a mode-`0700` temporary direc
 
 Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial timeouts range from 30 to 600 seconds and default to 120 seconds; resumed children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second continuation budget.
 
-Persistent profile model, thinking, and environment overrides may be placed in:
+Persistent profile model, thinking, and environment overrides—and extra child CLI arguments—may be placed in:
 
 | Location | Scope |
 |---|---|
@@ -151,6 +151,7 @@ Persistent profile model, thinking, and environment overrides may be placed in:
 
 ```json
 {
+  "additionalArgs": ["-e", "/absolute/path/to/child-extension.ts"],
   "profiles": {
     "scout": {
       "model": "anthropic/claude-haiku-4-5",
@@ -164,6 +165,8 @@ Persistent profile model, thinking, and environment overrides may be placed in:
 }
 ```
 
+`additionalArgs` is inserted into every child command after pi-dede's built-in options and before the task prompt. This permits options such as `-e /absolute/path/to/child-extension.ts`; because arguments are appended after `--no-extensions`, an explicit extension can be loaded while normal extension discovery remains disabled. A trusted project's `additionalArgs` array replaces the global array.
+
 Project values override global model/thinking fields and merge environment values by variable name. Per-agent values then override configured environment values. The complete child environment precedence is inherited master process environment, global profile environment, trusted-project profile environment, per-agent environment, then pi-dede's internal control variables.
 
 Configuration is read on every delegation. Project configuration is ignored unless Pi trusts the project. Environment names must be portable identifiers; session/delegation variables and process-startup controls such as `PATH`, `NODE_OPTIONS`, loader variables, and `BASH_ENV` cannot be overridden. The final merged override map may contain at most 64 variables and 16 KiB total, with an 8 KiB limit per value.
@@ -172,7 +175,7 @@ Configuration is read on every delegation. Project configuration is ignored unle
 
 ### Extension-provided master models
 
-Children run with extensions disabled. If the master's current provider exists only through an extension, configure a built-in child-compatible model in `pi-dede.json` or set `agents[].model`. Validation errors include bounded catalog candidates to make this repair actionable.
+Children do not inherit the master's loaded extensions. To use an extension-registered provider in children, load the provider extension explicitly with `additionalArgs`, for example `["-e", "/absolute/path/to/provider-extension.ts"]`. Otherwise, configure a built-in child-compatible model in `pi-dede.json` or set `agents[].model`. Validation rejects extension-only providers when no child extension is configured and includes bounded catalog candidates in the error.
 
 ## Limits
 
@@ -194,7 +197,7 @@ Children run with extensions disabled. If the master's current provider exists o
 
 ## Security and isolation
 
-Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled. Each uses an exact session ID inside pi-dede's private temporary session directory so timed-out work can be continued briefly. Prompts are mode-`0600` temporary files rather than command-line text.
+Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled unless explicitly changed through configured `additionalArgs`. Each uses an exact session ID inside pi-dede's private temporary session directory so timed-out work can be continued briefly. Prompts are mode-`0600` temporary files rather than command-line text.
 
 Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. `AGENTS.md`, skills, and project instructions are not inherited, so pass only the relevant trusted rules in `sharedContext`.
 

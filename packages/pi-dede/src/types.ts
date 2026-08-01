@@ -128,6 +128,7 @@ export interface ValidationContext {
   model?: ModelLike;
   models: ModelLike[];
   extensionProviderIds?: readonly string[];
+  extensionProvidersAvailableToChild?: boolean;
   profileDefaults?: ProfileDefaults;
   resumeLookup?: (handle: string) => ResumeSource | undefined;
 }

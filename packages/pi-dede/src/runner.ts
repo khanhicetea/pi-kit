@@ -122,6 +122,7 @@ export interface RunChildOptions {
   isResume?: boolean;
   runId: string;
   parentSessionId: string;
+  additionalArgs?: readonly string[];
   timeoutSeconds: number;
   signal?: AbortSignal;
   manager: ChildProcessManager;
@@ -141,6 +142,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     isResume: options.isResume,
     runId: options.runId,
     parentSessionId: options.parentSessionId,
+    additionalArgs: options.additionalArgs,
   });
 
   let stderr = "";

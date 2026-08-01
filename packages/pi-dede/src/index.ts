@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadProfileDefaults } from "./config.ts";
+import { loadDedeConfig } from "./config.ts";
 import { buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
 import { aggregateUsages } from "./json-events.ts";
 import { cloneDetails, deriveStatus, formatModelContent, progressContent, zeroUsage } from "./output.ts";
@@ -36,6 +36,10 @@ function queuedResult(agent: ResolvedAgent): DedeChildResult {
 function sessionId(ctx: ExtensionContext): string {
   const manager = ctx.sessionManager as unknown as { getSessionId?: () => string };
   return manager.getSessionId?.() ?? process.env.PI_SESSION_ID ?? "ephemeral";
+}
+
+function explicitlyLoadsChildExtension(args: readonly string[]): boolean {
+  return args.some((arg) => arg === "-e" || arg === "--extension" || arg.startsWith("--extension="));
 }
 
 export default function dedeExtension(pi: ExtensionAPI): void {
@@ -95,11 +99,13 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       const parentSessionId = sessionId(ctx);
       resumeStore ??= new ChildResumeStore(parentSessionId);
       const isResumeRequest = params.agents.some((agent) => agent.resume !== undefined);
-      const profileDefaults = isResumeRequest ? {} : await loadProfileDefaults(ctx.cwd, ctx.isProjectTrusted());
+      const config = await loadDedeConfig(ctx.cwd, ctx.isProjectTrusted());
+      const profileDefaults = isResumeRequest ? {} : config.profiles;
       const agents = validateAndResolve(params, {
         model: ctx.model,
         models: ctx.modelRegistry.getAll(),
         extensionProviderIds: ctx.modelRegistry.getRegisteredProviderIds(),
+        extensionProvidersAvailableToChild: explicitlyLoadsChildExtension(config.additionalArgs),
         profileDefaults,
         resumeLookup: (handle) => resumeStore!.peek(handle),
       });
@@ -212,6 +218,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               isResume: agent.resume !== undefined,
               runId,
               parentSessionId,
+              additionalArgs: config.additionalArgs,
               timeoutSeconds: agent.timeoutSeconds,
               signal: combinedSignal,
               manager: processManager,

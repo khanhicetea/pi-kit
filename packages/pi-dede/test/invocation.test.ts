@@ -95,6 +95,19 @@ describe("child invocation", () => {
     expect(invocation.env.PI_DEDE_RESUME_ATTEMPT).toBe("1");
   });
 
+  it("appends configured CLI args before the child task", () => {
+    const invocation = buildChildInvocation({
+      agent: agent(["read"]),
+      ...invocationOptions,
+      additionalArgs: ["-e", "/tmp/custom-extension.ts"],
+    });
+    const extensionIndex = invocation.args.indexOf("-e");
+    const taskIndex = invocation.args.indexOf(`@${invocationOptions.taskPath}`);
+    expect(invocation.args.slice(extensionIndex, extensionIndex + 2)).toEqual(["-e", "/tmp/custom-extension.ts"]);
+    expect(extensionIndex).toBeGreaterThan(invocation.args.indexOf("--no-extensions"));
+    expect(extensionIndex).toBeLessThan(taskIndex);
+  });
+
   it("uses --no-tools for an empty toolset", () => {
     const invocation = buildChildInvocation({ agent: agent([]), ...invocationOptions });
     expect(invocation.args).toContain("--no-tools");

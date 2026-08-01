@@ -268,10 +268,11 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     const modelPattern = agent.model ?? profileDefaults?.model;
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
-    if (extensionProviders.has(model.provider)) {
+    if (extensionProviders.has(model.provider) && !context.extensionProvidersAvailableToChild) {
       throw new Error(
-        `Model provider ${model.provider} is registered by an extension and unavailable to isolated children. ` +
-        `Set ${label}.model or configure profiles.${profile}.model in pi-dede.json to a built-in provider model.` +
+        `Model provider ${model.provider} is registered by an extension that is not loaded in isolated children. ` +
+        `Load its extension explicitly with additionalArgs: ["-e", "/absolute/path/to/extension.ts"], ` +
+        `or set ${label}.model/configure profiles.${profile}.model to a built-in provider model.` +
         compatibleModelHint(context.models, extensionProviders),
       );
     }

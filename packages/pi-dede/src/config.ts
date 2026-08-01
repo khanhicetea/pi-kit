@@ -7,8 +7,14 @@ import { PROFILES, THINKING_LEVELS, type ProfileDefaults, type ThinkingLevel } f
 const CONFIG_FILE_NAME = "pi-dede.json";
 const MAX_CONFIG_BYTES = 64 * 1024;
 
+export interface DedeConfig {
+  profiles: ProfileDefaults;
+  additionalArgs: string[];
+}
+
 interface DedeConfigFile {
   profiles?: ProfileDefaults;
+  additionalArgs?: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -33,8 +39,16 @@ function parseConfig(content: string, path: string): DedeConfigFile {
     throw new Error(`Could not parse ${path}: invalid JSON`);
   }
   if (!isRecord(parsed)) throw new Error(`${path} must contain a JSON object`);
-  assertKnownKeys(parsed, ["profiles"], path);
-  if (parsed.profiles === undefined) return {};
+  assertKnownKeys(parsed, ["profiles", "additionalArgs"], path);
+  if (parsed.additionalArgs !== undefined) {
+    if (!Array.isArray(parsed.additionalArgs)) throw new Error(`${path}.additionalArgs must be an array`);
+    for (const [index, arg] of parsed.additionalArgs.entries()) {
+      if (typeof arg !== "string") throw new Error(`${path}.additionalArgs[${index}] must be a string`);
+    }
+  }
+  if (parsed.profiles === undefined) {
+    return { ...(parsed.additionalArgs !== undefined ? { additionalArgs: [...parsed.additionalArgs] } : {}) };
+  }
   if (!isRecord(parsed.profiles)) throw new Error(`${path}.profiles must be an object`);
   assertKnownKeys(parsed.profiles, PROFILES, `${path}.profiles`);
 
@@ -61,7 +75,10 @@ function parseConfig(content: string, path: string): DedeConfigFile {
       ...(env !== undefined ? { env } : {}),
     };
   }
-  return { profiles };
+  return {
+    profiles,
+    ...(parsed.additionalArgs !== undefined ? { additionalArgs: [...parsed.additionalArgs] } : {}),
+  };
 }
 
 async function readConfig(path: string): Promise<DedeConfigFile> {
@@ -96,10 +113,17 @@ export function getDedeConfigPaths(cwd: string): { global: string; project: stri
   };
 }
 
-/** Load global defaults and, for trusted projects only, field-level project overrides. */
-export async function loadProfileDefaults(cwd: string, projectTrusted: boolean): Promise<ProfileDefaults> {
+/** Load global configuration and, for trusted projects only, field-level project overrides. */
+export async function loadDedeConfig(cwd: string, projectTrusted: boolean): Promise<DedeConfig> {
   const paths = getDedeConfigPaths(cwd);
   const globalConfig = await readConfig(paths.global);
   const projectConfig = projectTrusted ? await readConfig(paths.project) : {};
-  return mergeProfileDefaults(globalConfig.profiles, projectConfig.profiles);
+  return {
+    profiles: mergeProfileDefaults(globalConfig.profiles, projectConfig.profiles),
+    additionalArgs: [...(projectConfig.additionalArgs ?? globalConfig.additionalArgs ?? [])],
+  };
+}
+
+export async function loadProfileDefaults(cwd: string, projectTrusted: boolean): Promise<ProfileDefaults> {
+  return (await loadDedeConfig(cwd, projectTrusted)).profiles;
 }

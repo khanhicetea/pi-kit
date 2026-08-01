@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { getDedeConfigPaths, loadProfileDefaults } from "../src/config.ts";
+import { getDedeConfigPaths, loadDedeConfig, loadProfileDefaults } from "../src/config.ts";
 
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const directories: string[] = [];
@@ -64,6 +64,30 @@ describe("profile default configuration", () => {
   it("returns no defaults when configuration files do not exist", async () => {
     const { cwd } = await setup();
     await expect(loadProfileDefaults(cwd, true)).resolves.toEqual({});
+  });
+
+  it("loads additional child CLI args with trusted project override", async () => {
+    const { cwd, globalPath, projectPath } = await setup();
+    await writeFile(globalPath, JSON.stringify({ additionalArgs: ["-e", "/global/ext.ts"] }));
+    await writeFile(projectPath, JSON.stringify({ additionalArgs: ["-e", "/project/ext.ts"] }));
+
+    await expect(loadDedeConfig(cwd, true)).resolves.toEqual({
+      profiles: {},
+      additionalArgs: ["-e", "/project/ext.ts"],
+    });
+    await expect(loadDedeConfig(cwd, false)).resolves.toEqual({
+      profiles: {},
+      additionalArgs: ["-e", "/global/ext.ts"],
+    });
+  });
+
+  it("validates additional child CLI args", async () => {
+    const { cwd, globalPath } = await setup();
+    await writeFile(globalPath, JSON.stringify({ additionalArgs: "-e /tmp/ext.ts" }));
+    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/additionalArgs must be an array/);
+
+    await writeFile(globalPath, JSON.stringify({ additionalArgs: ["-e", 42] }));
+    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/additionalArgs\[1\] must be a string/);
   });
 
   it("rejects malformed and unknown configuration values with the file path", async () => {
