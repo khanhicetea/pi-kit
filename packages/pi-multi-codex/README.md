@@ -6,7 +6,7 @@ It reuses pi's native OpenAI Codex provider, including its OAuth, model catalog,
 
 ## Requirements
 
-- pi 0.81.0 or newer (native provider registration)
+- pi 0.82.0 or newer (native provider registration)
 
 ## Install
 
