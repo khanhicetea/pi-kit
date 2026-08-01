@@ -1,6 +1,13 @@
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Provider } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  CONFIG_DIR_NAME,
+  type ExtensionAPI,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   CODEX_PROVIDER_PREFIX,
   codexUsageRows,
@@ -16,6 +23,15 @@ const DEFAULT_SLOTS = 3;
 const AUTO_USAGE_INTERVAL_MS = 5 * 60 * 1000;
 const SHARED_USAGE_STATE_KEY = "__piMultiCodexUsageStateV3";
 const USAGE_WIDGET_ID = "multi-codex-usage";
+const FAST_STATUS_ID = "multi-codex-fast";
+const FAST_SETTINGS_KEY = "pi-codex-fast";
+const PRIORITY_MODEL_IDS = new Set([
+  "gpt-5.4",
+  "gpt-5.5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
 
 interface SharedUsageState {
   lastCheckAt: Map<string, number>;
@@ -39,6 +55,75 @@ function sharedUsageState(): SharedUsageState {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+async function readSettings(path: string): Promise<Record<string, unknown>> {
+  try {
+    const settings: unknown = JSON.parse(await readFile(path, "utf8"));
+    return isRecord(settings) ? settings : {};
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") return {};
+    throw error;
+  }
+}
+
+function mergeSettings(
+  base: Record<string, unknown>,
+  overrides: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...base };
+  for (const [key, override] of Object.entries(overrides)) {
+    merged[key] = isRecord(merged[key]) && isRecord(override)
+      ? mergeSettings(merged[key], override)
+      : override;
+  }
+  return merged;
+}
+
+interface FastModeSettings {
+  enabled: boolean;
+  fastModels: Set<string>;
+}
+
+async function loadFastModeSettings(cwd: string): Promise<FastModeSettings> {
+  const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), CONFIG_DIR_NAME, "agent");
+  const settings = mergeSettings(
+    await readSettings(join(agentDir, "settings.json")),
+    await readSettings(join(cwd, CONFIG_DIR_NAME, "settings.json")),
+  );
+  const extensionSettings = settings[FAST_SETTINGS_KEY];
+  if (!isRecord(extensionSettings)) return { enabled: false, fastModels: new Set() };
+
+  const fastModels = Array.isArray(extensionSettings.fast_models)
+    ? extensionSettings.fast_models
+      .filter((value): value is string => typeof value === "string" && value.trim() !== "")
+      .map((value) => value.trim())
+    : [];
+  return {
+    enabled: extensionSettings.enabled === true,
+    fastModels: new Set(fastModels),
+  };
+}
+
+function modelUsesAutomaticFastMode(ctx: ExtensionContext, fastModels: Set<string>): boolean {
+  const model = ctx.model;
+  return Boolean(
+    model
+      && (fastModels.has(model.id) || fastModels.has(`${model.provider}/${model.id}`)),
+  );
+}
+
+function supportsFastMode(ctx: ExtensionContext): boolean {
+  const model = ctx.model;
+  return Boolean(
+    model
+      && isCodexProvider(model.provider)
+      && PRIORITY_MODEL_IDS.has(model.id),
+  );
 }
 
 function truncatePlain(text: string, width: number): string {
@@ -219,6 +304,49 @@ function createSlotProvider(
 }
 
 export default function multiCodex(pi: ExtensionAPI) {
+  let fastModeEnabled = false;
+  let fastModeSettings: FastModeSettings = { enabled: false, fastModels: new Set() };
+
+  function updateFastStatus(ctx: ExtensionContext): void {
+    if (!ctx.hasUI) return;
+    if (!fastModeEnabled) {
+      ctx.ui.setStatus(FAST_STATUS_ID, undefined);
+      return;
+    }
+
+    const label = supportsFastMode(ctx) ? "fast" : "fast (inactive)";
+    ctx.ui.setStatus(FAST_STATUS_ID, ctx.ui.theme.fg("accent", label));
+  }
+
+  function notifyFastMode(ctx: ExtensionContext): void {
+    if (!ctx.hasUI) return;
+    if (!fastModeEnabled) {
+      ctx.ui.notify("Fast mode disabled. Requests will use the default service tier.", "info");
+      return;
+    }
+
+    const modelLabel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "no active model";
+    const suffix = supportsFastMode(ctx) ? "" : " but inactive";
+    ctx.ui.notify(`Fast mode enabled${suffix} (${modelLabel}).`, "info");
+  }
+
+  async function resetFastMode(ctx: ExtensionContext): Promise<void> {
+    fastModeSettings = { enabled: false, fastModels: new Set() };
+    try {
+      fastModeSettings = await loadFastModeSettings(ctx.cwd);
+    } catch (error) {
+      if (ctx.hasUI) {
+        ctx.ui.notify(`pi-multi-codex: failed to load fast mode setting: ${errorMessage(error)}`, "warning");
+      }
+    }
+
+    fastModeEnabled = fastModeSettings.fastModels.size > 0
+      ? modelUsesAutomaticFastMode(ctx, fastModeSettings.fastModels)
+      : fastModeSettings.enabled;
+    if (pi.getFlag("fast") === true) fastModeEnabled = true;
+    updateFastStatus(ctx);
+  }
+
   const source = builtinProviders().find(
     (provider): provider is Provider<"openai-codex-responses"> => provider.id === "openai-codex",
   );
@@ -228,6 +356,21 @@ export default function multiCodex(pi: ExtensionAPI) {
     pi.registerProvider(createSlotProvider(source, slot));
   }
 
+  pi.registerFlag("fast", {
+    description: "Start with Codex fast mode enabled",
+    type: "boolean",
+    default: false,
+  });
+
+  pi.registerCommand("codex-fast", {
+    description: "Toggle Codex fast mode for this session",
+    handler: async (_args, ctx) => {
+      fastModeEnabled = !fastModeEnabled;
+      updateFastStatus(ctx);
+      notifyFastMode(ctx);
+    },
+  });
+
   pi.registerCommand("codex-usage", {
     description: "Check usage for the currently selected Codex account",
     handler: async (_args, ctx) => {
@@ -235,8 +378,9 @@ export default function multiCodex(pi: ExtensionAPI) {
     },
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     clearUsage(ctx);
+    await resetFastMode(ctx);
   });
 
   pi.on("agent_settled", (_event, ctx) => {
@@ -245,5 +389,17 @@ export default function multiCodex(pi: ExtensionAPI) {
 
   pi.on("model_select", (_event, ctx) => {
     clearUsage(ctx);
+    if (fastModeSettings.fastModels.size > 0) {
+      fastModeEnabled = modelUsesAutomaticFastMode(ctx, fastModeSettings.fastModels);
+    }
+    updateFastStatus(ctx);
+  });
+
+  pi.on("before_provider_request", (event, ctx) => {
+    if (!fastModeEnabled || !supportsFastMode(ctx) || !isRecord(event.payload)) return;
+    return {
+      ...event.payload,
+      service_tier: "priority",
+    };
   });
 }

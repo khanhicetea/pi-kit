@@ -42,6 +42,45 @@ Then use pi's built-in `/model` command to select an account. Slot models are la
 
 Use pi's built-in `/logout` command to remove a slot's credentials.
 
+### Fast mode
+
+Run `/codex-fast` to toggle OpenAI's priority service tier for the current session. The footer shows `fast` while it is active, or `fast (inactive)` when fast mode is enabled but the selected model does not support it. You can also start pi with `--fast`.
+
+Fast mode currently applies to these models on the built-in Codex provider and every numbered Codex slot:
+
+- `gpt-5.4`
+- `gpt-5.5`
+- `gpt-5.6-sol`
+- `gpt-5.6-terra`
+- `gpt-5.6-luna`
+
+To enable it by default, add the same setting used by `pi-codex-fast` to either the global `~/.pi/agent/settings.json` or project `.pi/settings.json`:
+
+```json
+{
+  "pi-codex-fast": {
+    "enabled": true
+  }
+}
+```
+
+For model-based opt-in, set a non-empty `fast_models` array instead. Fast mode then turns on automatically when selecting a listed model and off when selecting another model:
+
+```json
+{
+  "pi-codex-fast": {
+    "fast_models": [
+      "gpt-5.4",
+      "openai-codex-2/gpt-5.6-sol"
+    ]
+  }
+}
+```
+
+A bare model ID matches that model across the built-in provider and every numbered slot. Use `provider/model` to target one provider slot. When `fast_models` is non-empty it takes precedence over `enabled`. A manual `/codex-fast` toggle remains in effect until the next model selection or session.
+
+The project setting overrides the global setting. `/codex-fast` only changes in-memory state: it never writes settings or carries the toggle into another session. Edit the settings file to change the default across sessions.
+
 ### Usage checks
 
 Run this command to fetch rate-limit usage for the account behind the currently selected Codex provider:
