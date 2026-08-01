@@ -10,6 +10,8 @@ const originalScript = process.argv[1];
 const originalHerdr = {
   HERDR_ENV: process.env.HERDR_ENV,
   HERDR_PANE_ID: process.env.HERDR_PANE_ID,
+  HERDR_TAB_ID: process.env.HERDR_TAB_ID,
+  HERDR_WORKSPACE_ID: process.env.HERDR_WORKSPACE_ID,
   HERDR_BIN_PATH: process.env.HERDR_BIN_PATH,
 };
 
@@ -44,7 +46,7 @@ describe("Herdr child transport", () => {
     expect(isInsideHerdr({ HERDR_PANE_ID: "w1:p1" })).toBe(false);
   });
 
-  it("runs the existing JSON child protocol through a Herdr pane", async () => {
+  it("runs the existing JSON child protocol through a Herdr tab", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-herdr-"));
     const fakePi = join(directory, "fake-pi.mjs");
     const fakeHerdr = join(directory, "fake-herdr.mjs");
@@ -62,7 +64,7 @@ describe("Herdr child transport", () => {
         console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/example.ts", offset: 10, limit: 20 } }));
         console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", isError: false }));
         console.log(JSON.stringify({ type: "message_end", message: {
-          role: "assistant", content: [{ type: "text", text: "## Answer\\n- visible pane result" }],
+          role: "assistant", content: [{ type: "text", text: "## Answer\\n- visible tab result" }],
           provider: "fake", model: "model", timestamp: Date.now(), stopReason: "stop", usage
         }}));
         console.log(JSON.stringify({ type: "agent_end" }));
@@ -72,14 +74,23 @@ describe("Herdr child transport", () => {
         import { spawn } from "node:child_process";
         const args = process.argv.slice(2);
         appendFileSync(process.env.DEDE_HERDR_LOG, JSON.stringify(args) + "\\n");
-        if (args[0] === "pane" && args[1] === "split") {
-          console.log(JSON.stringify({ result: { pane: { pane_id: "w1:p2" } } }));
+        if (args[0] === "tab" && args[1] === "create") {
+          console.log(JSON.stringify({ result: {
+            tab: { tab_id: "w1:t2" },
+            root_pane: { pane_id: "w1:p2" }
+          } }));
         } else if (args[0] === "pane" && args[1] === "run") {
           const output = openSync(process.env.DEDE_HERDR_PANE_OUTPUT, "a");
           const child = spawn("/bin/sh", ["-lc", args[3]], {
             detached: true,
             stdio: ["ignore", output, output],
-            env: { ...process.env, HERDR_ENV: "1", HERDR_PANE_ID: "w1:p2" },
+            env: {
+              ...process.env,
+              HERDR_ENV: "1",
+              HERDR_PANE_ID: "w1:p2",
+              HERDR_TAB_ID: "w1:t2",
+              HERDR_WORKSPACE_ID: "w1",
+            },
           });
           child.unref();
           console.log(JSON.stringify({ result: { pane_id: "w1:p2" } }));
@@ -93,6 +104,8 @@ describe("Herdr child transport", () => {
     process.argv[1] = fakePi;
     process.env.HERDR_ENV = "1";
     process.env.HERDR_PANE_ID = "w1:p1";
+    process.env.HERDR_TAB_ID = "w1:t1";
+    process.env.HERDR_WORKSPACE_ID = "w1";
     process.env.HERDR_BIN_PATH = fakeHerdr;
     process.env.DEDE_HERDR_LOG = logPath;
     process.env.DEDE_HERDR_PANE_OUTPUT = paneOutputPath;
@@ -117,11 +130,16 @@ describe("Herdr child transport", () => {
 
       expect(result).toMatchObject({
         status: "succeeded",
-        finalText: "## Answer\n- visible pane result",
+        finalText: "## Answer\n- visible tab result",
         exitCode: 0,
       });
       const commands = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-      expect(commands.some((args) => args[0] === "pane" && args[1] === "split")).toBe(true);
+      const create = commands.find((args) => args[0] === "tab" && args[1] === "create");
+      expect(create).toEqual([
+        "tab", "create", "--workspace", "w1", "--cwd", directory,
+        "--label", "đệ pane-scout", "--no-focus",
+      ]);
+      expect(commands.some((args) => args[0] === "pane" && args[1] === "split")).toBe(false);
       expect(commands.some((args) => args[0] === "pane" && args[1] === "run")).toBe(true);
       const paneOutput = await readFile(paneOutputPath, "utf8");
       expect(paneOutput).toContain("→ read src/example.ts:10-29");

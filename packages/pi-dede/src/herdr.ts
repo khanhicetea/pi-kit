@@ -24,6 +24,7 @@ export interface HerdrCompletion {
 
 export interface HerdrChild {
   readonly paneId: string;
+  readonly tabId: string;
   readonly completion: Promise<HerdrCompletion>;
   readonly closed: Promise<void>;
   signal(signal: NodeJS.Signals): Promise<void>;
@@ -82,11 +83,20 @@ async function runCli(command: string, args: string[], timeoutMs = 5000, signal?
   });
 }
 
-function parsePaneId(stdout: string): string | undefined {
+function parseCreatedTab(stdout: string): { tabId: string; paneId: string } | undefined {
   try {
-    const value = JSON.parse(stdout) as { result?: { pane?: { pane_id?: unknown } } };
-    const paneId = value.result?.pane?.pane_id;
-    return typeof paneId === "string" && paneId.length > 0 ? paneId : undefined;
+    const value = JSON.parse(stdout) as {
+      result?: {
+        tab?: { tab_id?: unknown };
+        root_pane?: { pane_id?: unknown };
+      };
+    };
+    const tabId = value.result?.tab?.tab_id;
+    const paneId = value.result?.root_pane?.pane_id;
+    return typeof tabId === "string" && tabId.length > 0
+      && typeof paneId === "string" && paneId.length > 0
+      ? { tabId, paneId }
+      : undefined;
   } catch {
     return undefined;
   }
@@ -130,7 +140,7 @@ async function readNewBytes(path: string, offset: number, consume: (chunk: Buffe
   }
 }
 
-class PaneChild implements HerdrChild {
+class TabChild implements HerdrChild {
   readonly completion: Promise<HerdrCompletion>;
   readonly closed: Promise<void>;
   private complete!: (value: HerdrCompletion) => void;
@@ -138,6 +148,7 @@ class PaneChild implements HerdrChild {
 
   constructor(
     readonly paneId: string,
+    readonly tabId: string,
     private readonly cli: string,
     private readonly stdoutPath: string,
     private readonly stderrPath: string,
@@ -162,7 +173,7 @@ class PaneChild implements HerdrChild {
         stdoutOffset = await readNewBytes(this.stdoutPath, stdoutOffset, this.onStdout);
         stderrOffset = await readNewBytes(this.stderrPath, stderrOffset, this.onStderr);
         this.finish(completion);
-        void runCli(this.cli, ["pane", "close", this.paneId]);
+        void runCli(this.cli, ["tab", "close", this.tabId]);
         return;
       } catch { /* supervisor is still running */ }
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
@@ -184,32 +195,34 @@ class PaneChild implements HerdrChild {
     }
 
     // Give the supervisor time to observe SIGKILL and kill the detached process
-    // group. Closing the pane first could orphan that group.
+    // group. Closing the tab first could orphan that group.
     await Promise.race([
       this.completion,
       new Promise((resolve) => setTimeout(resolve, 1000)),
     ]);
     if (!this.done) {
-      await runCli(this.cli, ["pane", "close", this.paneId], 2000);
-      this.finish({ signal, error: "Herdr pane did not report completion after forced cancellation" });
+      await runCli(this.cli, ["tab", "close", this.tabId], 2000);
+      this.finish({ signal, error: "Herdr tab did not report completion after forced cancellation" });
     }
   }
 }
 
 /**
- * Start a child in a sibling Herdr pane. Returns undefined only when setup failed
- * before Herdr accepted the pane command, allowing the caller to safely fall back.
+ * Start a child in a sibling Herdr tab. Returns undefined only when setup failed
+ * before Herdr accepted the tab command, allowing the caller to safely fall back.
  */
 export async function tryLaunchHerdrChild(options: LaunchHerdrOptions): Promise<HerdrChild | undefined> {
   if (!isInsideHerdr()) return undefined;
 
   const cli = herdrCommand();
-  const split = await runCli(cli, [
-    "pane", "split", "--current", "--direction", "right",
-    "--cwd", options.cwd, "--no-focus",
-  ], 5000, options.signal);
-  const paneId = split.code === 0 ? parsePaneId(split.stdout) : undefined;
-  if (!paneId) return undefined;
+  const createArgs = ["tab", "create"];
+  const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
+  if (workspaceId) createArgs.push("--workspace", workspaceId);
+  createArgs.push("--cwd", options.cwd, "--label", `đệ ${options.label}`, "--no-focus");
+  const created = await runCli(cli, createArgs, 5000, options.signal);
+  const tab = created.code === 0 ? parseCreatedTab(created.stdout) : undefined;
+  if (!tab) return undefined;
+  const { tabId, paneId } = tab;
 
   const prefix = `herdr-${options.label.replace(/[^a-zA-Z0-9-]/g, "_")}`;
   const manifestPath = join(options.privateDirectory, `${prefix}.json`);
@@ -241,23 +254,23 @@ export async function tryLaunchHerdrChild(options: LaunchHerdrOptions): Promise<
     ]);
     await chmod(manifestPath, 0o600);
   } catch {
-    await runCli(cli, ["pane", "close", paneId], 2000);
+    await runCli(cli, ["tab", "close", tabId], 2000);
     return undefined;
   }
 
-  void runCli(cli, ["pane", "rename", paneId, `đệ ${options.label}`], 2000);
   const terminalCommand = `${shellQuote(supervisorRuntime())} ${shellQuote(supervisorPath)} ${shellQuote(manifestPath)}`;
   const dispatched = await runCli(cli, ["pane", "run", paneId, terminalCommand], 5000, options.signal);
   if (dispatched.code !== 0 && (!dispatched.error || dispatched.spawnFailed)) {
     // A definitive CLI rejection means the command did not start, so fallback is safe.
-    await runCli(cli, ["pane", "close", paneId], 2000);
+    await runCli(cli, ["tab", "close", tabId], 2000);
     return undefined;
   }
   // A timeout or transport error is ambiguous: Herdr may already have accepted the
-  // command. Track the pane instead of falling back and risking duplicate work.
+  // command. Track the tab instead of falling back and risking duplicate work.
 
-  return new PaneChild(
+  return new TabChild(
     paneId,
+    tabId,
     cli,
     stdoutPath,
     stderrPath,

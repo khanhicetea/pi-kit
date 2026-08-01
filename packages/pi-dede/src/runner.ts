@@ -55,7 +55,7 @@ function isHerdrChild(child: ManagedChild): child is HerdrChild {
   return "completion" in child && "signal" in child;
 }
 
-/** Tracks complete process groups and Herdr pane children for cancellation and session shutdown. */
+/** Tracks complete process groups and Herdr tab children for cancellation and session shutdown. */
 export class ChildProcessManager {
   private readonly tracked = new Set<TrackedProcess>();
 
