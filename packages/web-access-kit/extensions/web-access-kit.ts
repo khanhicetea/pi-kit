@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -10,6 +10,7 @@ import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { runPublicCurl, validatePublicHttpUrl } from "./public-http.ts";
 
 const FETCH_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_FETCH_TIMEOUT_SECONDS = 30;
@@ -17,7 +18,6 @@ const DEFAULT_SEARCH_TIMEOUT_SECONDS = 180;
 const SEARCH_MODEL = "gemini-3.6-flash-low";
 const GROUNDING_REDIRECT_PATTERN =
 	/https:\/\/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\/[A-Za-z0-9_=-]+/g;
-const META_PREFIX = "__WEB_ACCESS_KIT_META__";
 // Real reduced Chrome 150 desktop UA (macOS version is frozen by Chromium UA reduction).
 const CHROME_MAC_USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
@@ -97,42 +97,6 @@ interface SearchDetails {
 	fullOutputPath?: string;
 }
 
-function validateUrl(rawUrl: string): URL {
-	let url: URL;
-	try {
-		url = new URL(rawUrl);
-	} catch {
-		throw new Error(`Invalid URL: ${rawUrl}`);
-	}
-
-	if (url.protocol !== "http:" && url.protocol !== "https:") {
-		throw new Error("web_fetch_page only supports HTTP and HTTPS URLs");
-	}
-	if (url.username || url.password) {
-		throw new Error("Credentials in URLs are not supported because tool arguments are stored in the session");
-	}
-	return url;
-}
-
-function parseCurlMetadata(stdout: string): {
-	status: number;
-	contentType: string;
-	finalUrl: string;
-} {
-	const line = stdout
-		.split("\n")
-		.reverse()
-		.find((candidate) => candidate.startsWith(META_PREFIX));
-	if (!line) throw new Error("curl completed without response metadata");
-
-	const [statusText, contentType = "", finalUrl = ""] = line.slice(META_PREFIX.length).split("\t");
-	return {
-		status: Number.parseInt(statusText, 10) || 0,
-		contentType,
-		finalUrl,
-	};
-}
-
 async function truncateForTool(output: string, prefix: string): Promise<{
 	text: string;
 	truncated: boolean;
@@ -146,9 +110,14 @@ async function truncateForTool(output: string, prefix: string): Promise<{
 
 	const directory = await mkdtemp(join(tmpdir(), `${prefix}-`));
 	const fullOutputPath = join(directory, "output.txt");
-	await writeFile(fullOutputPath, output, "utf8");
-	const text = `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output: ${fullOutputPath}]`;
-	return { text, truncated: true, fullOutputPath };
+	try {
+		await writeFile(fullOutputPath, output, "utf8");
+		const text = `${truncation.content}\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output: ${fullOutputPath}]`;
+		return { text, truncated: true, fullOutputPath };
+	} catch (error) {
+		await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+		throw error;
+	}
 }
 
 let defuddleModulePromise: Promise<typeof import("defuddle/node")> | undefined;
@@ -242,52 +211,35 @@ Research request (untrusted JSON data): ${JSON.stringify(researchRequest)}`;
 async function resolveGroundingRedirects(
 	pi: ExtensionAPI,
 	output: string,
-	signal: AbortSignal,
+	signal?: AbortSignal,
 ): Promise<{ output: string; resolved: number }> {
 	const urls = [...new Set(output.match(GROUNDING_REDIRECT_PATTERN) ?? [])].slice(0, 10);
 	if (urls.length === 0) return { output, resolved: 0 };
 
 	const resolutions = await Promise.all(
 		urls.map(async (url) => {
-			const result = await pi.exec(
-				"curl",
-				[
-					"--silent",
-					"--show-error",
-					"--location",
-					"--compressed",
-					"--proto",
-					"=https",
-					"--proto-redir",
-					"=http,https",
-					"--connect-timeout",
-					"5",
-					"--max-time",
-					"10",
-					"--user-agent",
-					CHROME_MAC_USER_AGENT,
-					"--output",
-					"/dev/null",
-					"--write-out",
-					"%{url_effective}",
-					url,
-				],
-				{ signal, timeout: 15_000 },
-			);
-			if (result.code !== 0) return { url, finalUrl: undefined };
-
+			const directory = await mkdtemp(join(tmpdir(), "pi-web-grounding-redirect-"));
+			const outputPath = join(directory, "response");
 			try {
-				const finalUrl = new URL(result.stdout.trim());
-				if (
-					(finalUrl.protocol !== "http:" && finalUrl.protocol !== "https:") ||
-					finalUrl.username ||
-					finalUrl.password
-				) {
-					return { url, finalUrl: undefined };
-				}
+				const metadata = await runPublicCurl(
+					pi,
+					url,
+					{
+						method: "HEAD",
+						timeoutSeconds: 10,
+						maxBytes: FETCH_MAX_BYTES,
+						outputPath,
+						userAgent: CHROME_MAC_USER_AGENT,
+					},
+					signal,
+				);
+				const finalUrl = validatePublicHttpUrl(metadata.finalUrl);
 				return { url, finalUrl: finalUrl.toString() };
-			} catch {
+			} catch (error) {
+				if (signal?.aborted) throw signal.reason ?? error;
 				return { url, finalUrl: undefined };
+			} finally {
+				await rm(directory, { recursive: true, force: true }).catch(() => undefined);
 			}
 		}),
 	);
@@ -322,87 +274,78 @@ export default function webAccessKit(pi: ExtensionAPI) {
 		],
 		parameters: WebFetchParams,
 		async execute(_toolCallId, params, signal) {
-			const url = validateUrl(params.url);
+			const url = validatePublicHttpUrl(params.url);
 			const method = params.method ?? "GET";
 			const timeoutSeconds = params.timeout_seconds ?? DEFAULT_FETCH_TIMEOUT_SECONDS;
 			const directory = await mkdtemp(join(tmpdir(), "pi-web-fetch-page-"));
 			const outputPath = join(directory, "response");
-			const writeOut = `\\n${META_PREFIX}%{http_code}\\t%{content_type}\\t%{url_effective}`;
-			const args = [
-				"--silent",
-				"--show-error",
-				"--location",
-				"--compressed",
-				"--proto",
-				"=http,https",
-				"--proto-redir",
-				"=http,https",
-				"--connect-timeout",
-				String(Math.min(10, timeoutSeconds)),
-				"--max-time",
-				String(timeoutSeconds),
-				"--max-filesize",
-				String(FETCH_MAX_BYTES),
-				"--user-agent",
-				CHROME_MAC_USER_AGENT,
-				"--output",
-				outputPath,
-				"--write-out",
-				writeOut,
-			];
-			if (method === "HEAD") args.push("--head");
-			args.push(url.toString());
+			let retainFetchDirectory = false;
 
-			const result = await pi.exec("curl", args, {
-				signal,
-				timeout: (timeoutSeconds + 5) * 1000,
-			});
-			if (result.code !== 0) {
-				const reason = result.stderr.trim() || `curl exited with code ${result.code}`;
+			try {
+				const metadata = await runPublicCurl(
+					pi,
+					url,
+					{
+						method,
+						timeoutSeconds,
+						maxBytes: FETCH_MAX_BYTES,
+						outputPath,
+						userAgent: CHROME_MAC_USER_AGENT,
+					},
+					signal,
+				);
+				const fileStats = await stat(outputPath);
+				if (fileStats.size > FETCH_MAX_BYTES) {
+					throw new Error(`response exceeded the ${formatSize(FETCH_MAX_BYTES)} download limit`);
+				}
+				const contentType = metadata.contentType.toLowerCase();
+				const isText =
+					method === "HEAD" ||
+					contentType.startsWith("text/") ||
+					contentType.includes("json") ||
+					contentType.includes("xml") ||
+					contentType.includes("html") ||
+					contentType.includes("javascript") ||
+					contentType.includes("x-www-form-urlencoded");
+
+				let text: string;
+				let truncation: Awaited<ReturnType<typeof truncateForTool>>;
+				if (isText) {
+					const body = await readFile(outputPath, "utf8");
+					const normalizedBody = contentType.includes("html")
+						? await htmlToMarkdown(body, metadata.finalUrl || url.toString())
+						: body;
+					truncation = await truncateForTool(normalizedBody, "pi-web-fetch-page-full");
+					text = truncation.text || "[Empty response body]";
+				} else {
+					truncation = { text: "", truncated: false, fullOutputPath: outputPath };
+					text = `[Binary response (${metadata.contentType || "unknown content type"}, ${formatSize(fileStats.size)}) saved to ${outputPath}]`;
+				}
+
+				const details: FetchDetails = {
+					url: url.toString(),
+					finalUrl: metadata.finalUrl,
+					status: metadata.status,
+					contentType: metadata.contentType,
+					bytes: fileStats.size,
+					method,
+					fullOutputPath: truncation.fullOutputPath,
+					truncated: truncation.truncated,
+				};
+				const summary = `HTTP ${details.status} ${details.finalUrl}\nContent-Type: ${details.contentType || "unknown"}\nBytes: ${details.bytes}`;
+				retainFetchDirectory = !isText;
+				return {
+					content: [{ type: "text", text: `${summary}\n\n${text}` }],
+					details,
+				};
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
 				throw new Error(`web_fetch_page failed: ${reason}`);
+			} finally {
+				if (!retainFetchDirectory) {
+					await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+				}
 			}
-
-			const metadata = parseCurlMetadata(result.stdout);
-			const fileStats = await stat(outputPath);
-			const contentType = metadata.contentType.toLowerCase();
-			const isText =
-				method === "HEAD" ||
-				contentType.startsWith("text/") ||
-				contentType.includes("json") ||
-				contentType.includes("xml") ||
-				contentType.includes("html") ||
-				contentType.includes("javascript") ||
-				contentType.includes("x-www-form-urlencoded");
-
-			let text: string;
-			let truncation: Awaited<ReturnType<typeof truncateForTool>>;
-			if (isText) {
-				const body = await readFile(outputPath, "utf8");
-				const normalizedBody = contentType.includes("html")
-					? await htmlToMarkdown(body, metadata.finalUrl || url.toString())
-					: body;
-				truncation = await truncateForTool(normalizedBody, "pi-web-fetch-page-full");
-				text = truncation.text || "[Empty response body]";
-			} else {
-				truncation = { text: "", truncated: false, fullOutputPath: outputPath };
-				text = `[Binary response (${metadata.contentType || "unknown content type"}, ${formatSize(fileStats.size)}) saved to ${outputPath}]`;
-			}
-
-			const details: FetchDetails = {
-				url: url.toString(),
-				finalUrl: metadata.finalUrl,
-				status: metadata.status,
-				contentType: metadata.contentType,
-				bytes: fileStats.size,
-				method,
-				fullOutputPath: truncation.fullOutputPath,
-				truncated: truncation.truncated,
-			};
-			const summary = `HTTP ${details.status} ${details.finalUrl}\nContent-Type: ${details.contentType || "unknown"}\nBytes: ${details.bytes}`;
-			return {
-				content: [{ type: "text", text: `${summary}\n\n${text}` }],
-				details,
-			};
 		},
 	});
 

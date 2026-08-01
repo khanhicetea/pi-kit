@@ -34,11 +34,15 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "npm pack --dry-run"
+    "test": "tsx --test test/*.test.ts",
+    "check": "npm test && npm pack --dry-run"
   },
   "dependencies": {
     "defuddle": "^0.19.1",
     "linkedom": "^0.18.13",
     "node-html-markdown": "^2.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0"
   }
 }

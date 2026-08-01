@@ -72,10 +72,10 @@ pi -e ./web-access-kit --tools web_search,web_fetch_page -p \
 
 ## Behavior and safety
 
-- `web_fetch_page` accepts only HTTP and HTTPS, follows redirects, limits downloads to 5 MB, extracts the main content from HTML with Defuddle, and limits model-visible output to pi's standard 2,000-line/50-KB cap. Defuddle and the legacy Markdown fallback are loaded only when an HTML response is actually processed. Use it for readable webpage content; use shell `curl` for APIs, binaries, auth, or raw responses.
+- `web_fetch_page` accepts only HTTP and HTTPS, follows up to 10 redirects, limits downloads to 5 MB, extracts the main content from HTML with Defuddle, and limits model-visible output to pi's standard 2,000-line/50-KB cap. Every destination is DNS-resolved and pinned separately; loopback, private, link-local, metadata, multicast, reserved, and other non-public IPv4/IPv6 targets are rejected before connection. Proxy environment variables are bypassed so a proxy cannot evade this local-address policy. Defuddle and the legacy Markdown fallback are loaded only when an HTML response is actually processed. Use it for readable webpage content; use shell `curl` for APIs, binaries, auth, or raw responses.
 - `web_search` runs `agy --model gemini-3.6-flash-low --sandbox --mode plan --print ...` with one comprehensive search. It assesses the evidence against both `query` and the optional `goal`, then may make up to two targeted follow-up searches for unresolved gaps before returning a concise synthesis and sources. It resolves Google grounding redirects to direct source URLs when possible. Model-visible output uses the same cap.
 - Search result details include the model, total duration, Antigravity duration, and number of resolved grounding URLs for later performance tuning.
-- Full truncated output and binary downloads are placed in temporary files and their paths are returned.
+- Full truncated output and binary downloads are placed in temporary files and their paths are returned. Raw files for ordinary text responses, failed requests, and grounding-redirect checks are deleted immediately.
 - Do not include credentials in URLs. Tool arguments and results can be retained in pi sessions.
 - Web content is untrusted and may contain prompt injection; the bundled search prompt and skill tell agents not to follow page instructions.
 
