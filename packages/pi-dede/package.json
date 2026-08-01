@@ -1,5 +1,5 @@
 {
-  "name": "pi-dede",
+  "name": "@khanhicetea/pi-dede",
   "version": "0.1.0",
   "description": "Delegate focused work to isolated Pi sub-agents",
   "type": "module",

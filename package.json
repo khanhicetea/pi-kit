@@ -3,6 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "description": "A monorepo of Pi extensions",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "pi": {
+    "extensions": [
+      "./packages/pi-multi-codex/index.ts",
+      "./packages/pi-dede/src/index.ts",
+      "./packages/pi-wui/src/index.ts",
+      "./packages/web-access-kit/extensions/web-access-kit.ts"
+    ],
+    "skills": [
+      "./packages/pi-wui/skills",
+      "./packages/web-access-kit/skills"
+    ]
+  },
   "workspaces": [
     "packages/*"
   ],

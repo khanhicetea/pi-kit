@@ -11,7 +11,7 @@ It reuses pi's native OpenAI Codex provider, including its OAuth, model catalog,
 ## Install
 
 ```bash
-pi install git:github.com/khanhicetea/pi-multi-codex@main
+pi install npm:@khanhicetea/pi-multi-codex
 ```
 
 For a one-off test:

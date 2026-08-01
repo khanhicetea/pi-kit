@@ -20067,7 +20067,7 @@ Union([
 	})
 ]);
 var package_default = {
-	name: "pi-wui",
+	name: "@khanhicetea/pi-wui",
 	version: "0.1.5",
 	description: "A session-scoped Web UI portal for Pi and MCP-compatible coding agents",
 	type: "module",

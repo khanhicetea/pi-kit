@@ -17,7 +17,7 @@ A Pi extension that delegates focused work to up to five isolated, ephemeral Pi 
 ## Install
 
 ```sh
-pi install npm:pi-dede
+pi install npm:@khanhicetea/pi-dede
 # Local checkout:
 pi install /absolute/path/to/pi-dede
 ```

@@ -24,19 +24,19 @@ WUI uses [json-render](https://github.com/vercel-labs/json-render) with the offi
 
 ## Install for Pi
 
-Install the latest version directly from GitHub:
+Install the latest version from npm:
 
 ```bash
-pi install git:github.com/khanhicetea/pi-wui
+pi install npm:@khanhicetea/pi-wui
 ```
 
-For a reproducible install, pin a release tag:
+For a reproducible install, pin a version:
 
 ```bash
-pi install git:github.com/khanhicetea/pi-wui@v0.1.0
+pi install npm:@khanhicetea/pi-wui@0.1.5
 ```
 
-Pi clones the repository and installs its runtime dependencies automatically. Start `pi` normally after installation. To update an unpinned install later, run `pi update --extensions`; pinned tags stay pinned until you install a different ref.
+Pi installs the package and its runtime dependencies automatically. Start `pi` normally after installation. To update an unpinned install later, run `pi update --extensions`; pinned versions stay pinned until you install a different version.
 
 To try a checkout during development instead:
 

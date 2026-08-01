@@ -22,10 +22,10 @@ agy --help
 
 ## Install
 
-Install from GitHub:
+Install from npm:
 
 ```bash
-pi install git:github.com/khanhicetea/web-access-kit@main
+pi install npm:@khanhicetea/web-access-kit
 ```
 
 Or test without installing:
