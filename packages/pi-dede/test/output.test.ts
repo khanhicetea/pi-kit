@@ -38,11 +38,15 @@ describe("output", () => {
     expect(deriveStatus([child("a", "cancelled")])).toBe("cancelled");
   });
 
-  it("preserves request order and presents partial failures", () => {
-    const text = formatModelContent(details([child("first", "succeeded"), child("second", "failed")]));
+  it("preserves request order, presents partial failures, and exposes child sessions", () => {
+    const first = child("first", "succeeded");
+    first.sessionId = "11111111-1111-4111-8111-111111111111";
+    const text = formatModelContent(details([first, child("second", "failed")]));
     expect(text).toContain("# Delegation: 1/2 succeeded");
     expect(text.indexOf("## first")).toBeLessThan(text.indexOf("## second"));
     expect(text).toContain("failed");
+    expect(text).toContain("Session: `11111111-1111-4111-8111-111111111111`");
+    expect(text).toContain("pi --session 11111111-1111-4111-8111-111111111111");
   });
 
   it("puts the short resume instructions before partial timed-out output", () => {

@@ -134,7 +134,7 @@ Each child is a separate process launched with `shell: false`, conceptually:
 
 ```sh
 pi --mode json --print --no-approve \
-  --session-dir <0700-private-temp-dir> --session <0600-private-session-file> \
+  --session-dir <pi-project-session-dir> --session <0600-child-session-file> \
   --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files \
   --append-system-prompt <0600-system-file> \
   --tools read,grep,find,ls \
@@ -142,7 +142,7 @@ pi --mode json --print --no-approve \
   @<0600-task-file> "Complete the delegated task in the attached task file."
 ```
 
-The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in a pi-dede-owned temporary session directory. A resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation. These private sessions do not appear in normal user session listings and are deleted at master session shutdown. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
+The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
 
 The system prompt tells every child to:
 
@@ -162,7 +162,7 @@ Initial child timeout precedence is explicit agent value, run default, then 120 
 
 Resume timeout precedence is explicit agent value, run default, then 60 seconds. A resume is rejected above 180 seconds and must still meet the 30-second minimum.
 
-A child's timer starts when its process starts. Timeout terminates its complete process tree and marks only that child `timed_out`. The result receives a `resumeHandle`, and the same private session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes it and deletes that private session file. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
+A child's timer starts when its process starts. Timeout terminates its complete process tree and marks only that child `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
 
 Parent abort, session replacement, reload, or shutdown cancels queued work and terminates every running process tree. Graceful termination is followed by forced termination after five seconds.
 
@@ -191,6 +191,7 @@ interface ChildResult {
   thinking: Thinking;
   tools: BuiltinTool[];
   timeoutSeconds: number;
+  sessionId?: string;         // present after session allocation; inspect with pi --session <id>
   resumedFrom?: string;
   resumeHandle?: string;      // present when short continuation remains available
   finalText: string;
@@ -225,7 +226,7 @@ Larger final text is stored in a mode-`0600` session artifact removed at session
 
 The call view shows mode, count, tool preset, timeout, and bounded goal preview. Resume calls are labeled `short resume`. While running, each row shows status, resume state, model, thinking, elapsed/deadline, latest bounded activity, and `Esc to cancel`. Timed-out expanded results display the handle and 30–180 second policy. Answer deltas are never rendered.
 
-Collapsed final output shows one compact answer preview and usage/duration per child. Expanded output shows assignment, budget, bounded activity, errors, Markdown result, artifact path, and usage.
+Collapsed final output shows one compact answer preview, the inspectable session ID, and usage/duration per child. Expanded output shows assignment, budget, session ID with the `pi --session <id>` command, bounded activity, errors, Markdown result, artifact path, and usage.
 
 UI methods are optional; execution works in TUI, RPC, JSON, and print modes.
 
@@ -235,7 +236,7 @@ Tool allowlists are capability reduction, not an OS sandbox. Children retain the
 
 Explicit `agents[].env` values are part of the tool call and therefore stored in the master transcript. Profile-configured values are not copied into prompts, progress, or results, but are plaintext in the sidecar file. Protected startup/control variables prevent environment overrides from changing the spawned executable, injecting runtime preload code, restoring the parent's session identity, or enabling recursive delegation.
 
-Prompts use a mode-`0700` run directory and mode-`0600` files. Private child sessions use a separate mode-`0700` temporary directory that survives individual runs only for immediate timeout continuation and is removed with the master runtime. No user-controlled prompt appears directly in process arguments. Child output and repository text are untrusted and never executed by the extension.
+Prompts use a mode-`0700` run directory and mode-`0600` files. Child conversations use Pi's persistent project session directory and remain until the user removes them through Pi's normal session management. No user-controlled prompt appears directly in process arguments. Child output and repository text are untrusted and never executed by the extension.
 
 ## 13. Non-goals
 

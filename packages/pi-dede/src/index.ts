@@ -97,7 +97,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
 
       // Configuration and semantic checks happen before temporary files, permits, or processes are created.
       const parentSessionId = sessionId(ctx);
-      resumeStore ??= new ChildResumeStore(parentSessionId);
+      resumeStore ??= new ChildResumeStore();
       const isResumeRequest = params.agents.some((agent) => agent.resume !== undefined);
       const config = await loadDedeConfig(ctx.cwd, ctx.isProjectTrusted());
       const profileDefaults = isResumeRequest ? {} : config.profiles;
@@ -202,6 +202,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
             details.results[index] = {
               ...details.results[index],
               status: "running",
+              sessionId: lease.sessionId,
               durationMs: 0,
               activity: [{ type: "status", text: agent.resume ? `resuming attempt ${agent.resume.attempt}` : "running" }],
             };
@@ -280,6 +281,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
                 ...details.results[index],
                 status: "cancelled",
                 durationMs,
+                ...(lease ? { sessionId: lease.sessionId } : {}),
                 ...(preservedResumeHandle ? { resumeHandle: preservedResumeHandle } : {}),
                 errorMessage: "Delegation cancelled",
                 activity: [...details.results[index].activity, { type: "status" as const, text: "cancelled" }].slice(-100),
@@ -290,6 +292,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
                 ...details.results[index],
                 status: "failed",
                 durationMs,
+                ...(lease ? { sessionId: lease.sessionId } : {}),
                 ...(preservedResumeHandle ? { resumeHandle: preservedResumeHandle } : {}),
                 errorMessage: message,
                 activity: [...details.results[index].activity, { type: "status" as const, text: "internal child error" }].slice(-100),

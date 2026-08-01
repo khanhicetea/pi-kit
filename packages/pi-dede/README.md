@@ -35,6 +35,7 @@ The master owns decomposition, comparison, verification, planning, and the final
 - 120-second default and 600-second maximum child deadline
 - Compact 400-word response contract
 - 4 KiB model-visible limit per child and 12 KiB aggregate limit
+- Persistent child session IDs for later inspection with `pi --session <id>`
 - Session-scoped continuation handles for timed-out children
 - Throttled TUI progress with elapsed/deadline display
 - Nested usage accounting and process-tree cancellation
@@ -102,7 +103,7 @@ Any child with `bash`, `edit`, or `write` is mutation-capable and must run alone
 
 ## Short continuation after timeout
 
-Each child runs in a private temporary Pi session. When a child times out, its result contains a `resumeHandle` and model-visible instructions. The master should resume only when the partial result shows the child is close to useful completion—not automatically after every timeout.
+Each child runs in its own persistent Pi session. Every returned child result includes its `sessionId`; use `pi --session <id>` from the same project to inspect the conversation later. When a child times out, its result also contains a `resumeHandle` and model-visible instructions. The master should resume only when the partial result shows the child is close to useful completion—not automatically after every timeout.
 
 ```json
 {
@@ -126,10 +127,10 @@ Resume rules:
 - the extension defaults to 60 seconds and allows 30–180 seconds;
 - the continuation prompt tells the child to reuse existing progress instead of restarting;
 - a second timeout returns the same handle for another deliberate short extension;
-- success or a terminal non-timeout failure consumes the handle and deletes that private child session;
+- success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection;
 - handles expire on master session shutdown, reload, replacement, or fork.
 
-Private child sessions use mode-`0600` files under a mode-`0700` temporary directory, do not appear in the user's normal Pi session list, and are removed with the master session runtime.
+Child sessions use Pi's normal persistent session storage and appear in the session list for the project. Their IDs are shown in collapsed and expanded tool results and in model-visible tool output.
 
 ## Profiles and defaults
 
@@ -197,7 +198,7 @@ Children do not inherit the master's loaded extensions. To use an extension-regi
 
 ## Security and isolation
 
-Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled unless explicitly changed through configured `additionalArgs`. Each uses an exact session ID inside pi-dede's private temporary session directory so timed-out work can be continued briefly. Prompts are mode-`0600` temporary files rather than command-line text.
+Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled unless explicitly changed through configured `additionalArgs`. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts are mode-`0600` temporary files rather than command-line text.
 
 Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. `AGENTS.md`, skills, and project instructions are not inherited, so pass only the relevant trusted rules in `sharedContext`.
 

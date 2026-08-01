@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { rm, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ChildResumeStore } from "../src/resume.ts";
@@ -19,10 +19,9 @@ const agent: ResolvedAgent = {
 
 describe("ChildResumeStore", () => {
   it("exposes only timed-out sessions and claims them atomically", async () => {
-    const store = new ChildResumeStore("parent/session");
+    const store = new ChildResumeStore();
     const lease = await store.allocate(agent, process.cwd());
     try {
-      expect((await stat(lease.directory)).mode & 0o777).toBe(0o700);
       expect((await stat(lease.sessionPath)).mode & 0o777).toBe(0o600);
       expect(SessionManager.open(lease.sessionPath, lease.directory).getSessionId()).toBe(lease.sessionId);
       expect(store.peek(lease.handle)).toBeUndefined();
@@ -46,16 +45,17 @@ describe("ChildResumeStore", () => {
       expect(store.peek(lease.handle)?.attempt).toBe(2);
       await store.discard(lease.handle);
       expect(store.peek(lease.handle)).toBeUndefined();
-      await expect(stat(lease.sessionPath)).rejects.toThrow();
+      expect((await stat(lease.sessionPath)).isFile()).toBe(true);
+      const sessions = await SessionManager.list(process.cwd());
+      expect(sessions.some((session) => session.id === lease.sessionId)).toBe(true);
     } finally {
-      const directory = lease.directory;
       await store.cleanup();
-      await expect(stat(directory)).rejects.toThrow();
+      await rm(lease.sessionPath, { force: true });
     }
   });
 
   it("releases a claimed session when resume setup fails", async () => {
-    const store = new ChildResumeStore("parent");
+    const store = new ChildResumeStore();
     const lease = await store.allocate(agent, process.cwd());
     try {
       store.markTimedOut(lease.handle);
@@ -64,6 +64,7 @@ describe("ChildResumeStore", () => {
       expect(store.peek(lease.handle)?.attempt).toBe(1);
     } finally {
       await store.cleanup();
+      await rm(lease.sessionPath, { force: true });
     }
   });
 });

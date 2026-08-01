@@ -233,6 +233,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     thinking: options.agent.thinking,
     tools: [...options.agent.tools],
     timeoutSeconds: options.timeoutSeconds,
+    sessionId: options.childSessionId,
     ...(options.agent.resume ? { resumedFrom: options.agent.resume.handle } : {}),
     finalText: capped.text,
     durationMs: Date.now() - startedAt,

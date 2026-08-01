@@ -70,6 +70,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
       const stats = `${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tok${child.usage.cost ? ` · $${child.usage.cost.toFixed(4)}` : ""} · ${seconds(child.durationMs)}`;
       text += `\n\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", child.status)}`;
       text += `\n    ${theme.fg("toolOutput", preview(first || child.errorMessage || "(no output)", 100))}`;
+      if (child.sessionId) text += `\n    ${theme.fg("dim", `session ${child.sessionId} · pi --session ${child.sessionId}`)}`;
       text += `\n    ${theme.fg("dim", stats)}`;
     }
     return new Text(text, 0, 0);
@@ -88,6 +89,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     container.addChild(new Text(`${icon(child.status, theme)} ${theme.fg("accent", theme.bold(child.id))} ${theme.fg("muted", `${child.profile} · ${child.model} · ${child.thinking}`)}`, 0, 0));
     container.addChild(new Text(theme.fg("muted", "Assignment: ") + theme.fg("dim", child.goal), 0, 0));
     container.addChild(new Text(theme.fg("muted", "Budget: ") + theme.fg("dim", `${child.timeoutSeconds}s · ${child.tools.join(", ") || "no tools"}`), 0, 0));
+    if (child.sessionId) container.addChild(new Text(theme.fg("muted", "Session: ") + theme.fg("dim", `${child.sessionId} · inspect with pi --session ${child.sessionId}`), 0, 0));
     if (child.activity.length) {
       const activity = child.activity.map((item) => `  ${item.type === "tool" ? "→" : "·"} ${item.text}`).join("\n");
       container.addChild(new Text(theme.fg("dim", activity), 0, 0));

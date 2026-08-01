@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { chmod, writeFile } from "node:fs/promises";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ResolvedAgent, ResumeSource } from "./types.ts";
 
@@ -34,30 +32,18 @@ function cloneSource(record: StoredResume): ResumeSource {
 
 /** Session-scoped store for timed-out child conversations. */
 export class ChildResumeStore {
-  private directory?: string;
   private closed = false;
   private readonly records = new Map<string, StoredResume>();
 
-  constructor(private readonly sessionLabel: string) {}
-
-  private async ensureDirectory(): Promise<string> {
-    if (this.closed) throw new Error("Child resume store is shut down");
-    if (!this.directory) {
-      const safeLabel = this.sessionLabel.replace(/[^a-zA-Z0-9-]/g, "_").slice(0, 48) || "session";
-      this.directory = await mkdtemp(join(tmpdir(), `pi-dede-sessions-${safeLabel}-`));
-      await chmod(this.directory, 0o700);
-    }
-    return this.directory;
-  }
-
-  /** Allocate an isolated child session. It becomes resumable only after markTimedOut(). */
+  /** Allocate a persistent, inspectable child session. It becomes resumable only after markTimedOut(). */
   async allocate(agent: ResolvedAgent, cwd: string): Promise<ResumeLease> {
-    const directory = await this.ensureDirectory();
+    if (this.closed) throw new Error("Child resume store is shut down");
     const handle = `dede_${randomUUID()}`;
     const sessionId = randomUUID();
-    const manager = SessionManager.create(cwd, directory, { id: sessionId });
+    const manager = SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR, { id: sessionId });
+    const directory = manager.getSessionDir();
     const sessionPath = manager.getSessionFile();
-    if (!sessionPath) throw new Error("Could not create private child session file");
+    if (!sessionPath) throw new Error("Could not create child session file");
     await writeFile(sessionPath, `${JSON.stringify(manager.getHeader())}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     await chmod(sessionPath, 0o600);
     const record: StoredResume = {
@@ -105,9 +91,8 @@ export class ChildResumeStore {
   }
 
   async discard(handle: string): Promise<void> {
-    const record = this.records.get(handle);
+    // Consume only the resume capability. The Pi session remains available for inspection.
     this.records.delete(handle);
-    if (record) await rm(record.sessionPath, { force: true });
   }
 
   get available(): number {
@@ -118,9 +103,5 @@ export class ChildResumeStore {
     if (this.closed) return;
     this.closed = true;
     this.records.clear();
-    if (!this.directory) return;
-    const directory = this.directory;
-    this.directory = undefined;
-    await rm(directory, { recursive: true, force: true });
   }
 }

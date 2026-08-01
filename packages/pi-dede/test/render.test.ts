@@ -37,4 +37,36 @@ describe("TUI rendering", () => {
     expect(text).toContain("scout · resumed · test/model · low · 1.2s/120s · reading src/index.ts");
     expect(text).toContain("Esc to cancel");
   });
+
+  it("shows the inspectable session ID in collapsed and expanded results", () => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const details: DedeToolDetails = {
+      version: 2,
+      runId: "run",
+      status: "succeeded",
+      startedAt: 0,
+      durationMs: 1200,
+      results: [{
+        id: "scout",
+        profile: "scout",
+        goal: "inspect",
+        status: "succeeded",
+        model: "test/model",
+        thinking: "low",
+        tools: ["read"],
+        timeoutSeconds: 120,
+        sessionId,
+        finalText: "Done",
+        durationMs: 1200,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 },
+        activity: [],
+      }],
+    };
+
+    const collapsed = renderDedeResult({ details }, { expanded: false }, theme, {}).render(200).join("\n");
+    expect(collapsed).toContain(`session ${sessionId} · pi --session ${sessionId}`);
+
+    const expanded = renderDedeResult({ details }, { expanded: true }, theme, { args: {} }).render(200).join("\n");
+    expect(expanded).toContain(`Session: ${sessionId} · inspect with pi --session ${sessionId}`);
+  });
 });

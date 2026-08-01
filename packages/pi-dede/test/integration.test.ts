@@ -32,6 +32,8 @@ describe("fake Pi integration", () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-parallel-"));
     const fake = join(directory, "fake-pi.mjs");
     const logPath = join(directory, "events.jsonl");
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
     await writeFile(fake, `
       import { appendFileSync, readFileSync } from "node:fs";
       const id = process.env.PI_DEDE_AGENT_ID;
@@ -100,6 +102,8 @@ describe("fake Pi integration", () => {
       expect(result.details.version).toBe(2);
       expect(result.details.results.map((child: any) => child.id)).toEqual(["slow", "fast"]);
       expect(result.details.results.every((child: any) => child.status === "succeeded" && child.timeoutSeconds === 120)).toBe(true);
+      expect(result.details.results.every((child: any) => /^[0-9a-f-]{36}$/.test(child.sessionId))).toBe(true);
+      expect(result.content[0].text).toContain(`pi --session ${result.details.results[0].sessionId}`);
       const logged = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
       const events = logged.map(({ id, event }: any) => `${id}:${event}`);
       expect(events.indexOf("fast:start")).toBeLessThan(events.indexOf("slow:end"));
@@ -111,13 +115,17 @@ describe("fake Pi integration", () => {
       expect(fastTask).toContain("# Your bounded assignment");
     } finally {
       await shutdown?.({}, ctx);
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(directory, { recursive: true, force: true });
     }
   });
 
-  it("resumes the same private child conversation after a timeout", async () => {
+  it("resumes the same persistent child conversation after a timeout", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-resume-"));
     const fake = join(directory, "fake-pi.mjs");
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
     await writeFile(fake, `
       import { existsSync, writeFileSync } from "node:fs";
       const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
@@ -174,6 +182,7 @@ describe("fake Pi integration", () => {
       }, undefined, undefined, ctx);
       const timedOut = first.details.results[0];
       expect(timedOut).toMatchObject({ status: "timed_out", timeoutSeconds: 30 });
+      expect(timedOut.sessionId).toMatch(/^[0-9a-f-]{36}$/);
       expect(timedOut.resumeHandle).toMatch(/^dede_/);
       expect(first.content[0].text).toContain(`"resume": "${timedOut.resumeHandle}"`);
 
@@ -190,6 +199,7 @@ describe("fake Pi integration", () => {
         id: "finish",
         status: "succeeded",
         resumedFrom: timedOut.resumeHandle,
+        sessionId: timedOut.sessionId,
         finalText: "## Answer\n- reused old session evidence",
       });
 
@@ -200,6 +210,8 @@ describe("fake Pi integration", () => {
     } finally {
       timeoutSpy.mockRestore();
       await shutdown?.({}, ctx);
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await rm(directory, { recursive: true, force: true });
     }
   });

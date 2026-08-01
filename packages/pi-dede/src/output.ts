@@ -16,11 +16,15 @@ export function deriveStatus(results: readonly DedeChildResult[]): DedeToolDetai
 }
 
 function childBody(result: DedeChildResult): string {
-  if (result.status === "succeeded") return result.finalText || "(no output)";
+  const session = result.sessionId
+    ? `Session: \`${result.sessionId}\` (inspect with \`pi --session ${result.sessionId}\`)`
+    : undefined;
+  if (result.status === "succeeded") return [session, result.finalText || "(no output)"].filter(Boolean).join("\n\n");
   const resume = result.resumeHandle
     ? `Short resume available: \`${result.resumeHandle}\`. Resume only if the partial work is close to useful completion. Call dede_delegate with one agent using \"resume\": \"${result.resumeHandle}\", a goal stating only what remains, and timeoutSeconds from 30 to 180.`
     : undefined;
   const diagnostics = [
+    session,
     result.errorMessage,
     resume,
     result.finalText && `Partial output:\n${result.finalText}`,

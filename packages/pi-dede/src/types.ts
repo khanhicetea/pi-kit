@@ -85,6 +85,8 @@ export interface DedeChildResult {
   thinking: ThinkingLevel;
   tools: BuiltinTool[];
   timeoutSeconds: number;
+  /** Persistent Pi session ID; inspect later with `pi --session <id>`. */
+  sessionId?: string;
   resumedFrom?: string;
   resumeHandle?: string;
   finalText: string;
