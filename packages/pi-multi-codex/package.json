@@ -1,0 +1,41 @@
+{
+  "name": "pi-multi-codex",
+  "version": "0.1.0",
+  "description": "Pi extension for logging into and switching between multiple OpenAI Codex accounts",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-coding-agent",
+    "openai",
+    "codex",
+    "oauth"
+  ],
+  "files": [
+    "index.ts",
+    "usage.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.81.0",
+    "@earendil-works/pi-coding-agent": ">=0.81.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.81.0",
+    "@earendil-works/pi-coding-agent": "^0.81.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+printf '%s\n' "pre-commit: running workspace checks and rebuilding distributable bundles"
+npm run check
+git add -f -- packages/pi-wui/dist/web packages/pi-wui/dist/mcp.js

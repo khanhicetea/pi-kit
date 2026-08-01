@@ -1,0 +1,30 @@
+{
+  "name": "pi-wui",
+  "version": "0.1.5",
+  "description": "Browser-based dashboards, reports, prototypes, and feedback forms for coding agents.",
+  "author": {
+    "name": "Khanh IceTea",
+    "url": "https://github.com/khanhicetea"
+  },
+  "homepage": "https://github.com/khanhicetea/pi-wui",
+  "repository": "https://github.com/khanhicetea/pi-wui",
+  "license": "MIT",
+  "keywords": ["coding-agent", "mcp", "generative-ui", "json-render"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "WUI for Coding Agents",
+    "shortDescription": "Browser views and feedback forms",
+    "longDescription": "Give Codex and other coding agents a session-scoped browser portal for dashboards, reports, prototypes, and structured feedback.",
+    "developerName": "Khanh IceTea",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/khanhicetea/pi-wui",
+    "defaultPrompt": [
+      "Show the results in an interactive Web UI.",
+      "Create a browser form for these questions.",
+      "Present these UI concepts side by side."
+    ],
+    "brandColor": "#167D74"
+  }
+}
