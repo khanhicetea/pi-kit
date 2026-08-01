@@ -1,6 +1,6 @@
 {
   "name": "@khanhicetea/web-access-kit",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Webpage reader and real-time Google search tools for pi, powered by curl, Defuddle, and Antigravity CLI.",
   "type": "module",
   "license": "MIT",
