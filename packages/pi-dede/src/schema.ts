@@ -1,53 +1,88 @@
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import {
+  CHILD_ENV_NAME_PATTERN,
+  MAX_CHILD_ENV_VARIABLES,
+  MAX_CHILD_ENV_VALUE_BYTES,
+  mergeChildEnv,
+  validateChildEnv,
+} from "./env.ts";
+import {
   BUILTIN_TOOLS,
-  DEPENDENCY_CONTEXT_MODES,
   PROFILES,
   THINKING_LEVELS,
   TOOL_PRESETS,
   type BuiltinTool,
   type DedeDelegateParams,
+  type DedeProfile,
   type ModelLike,
   type ResolvedAgent,
+  type ThinkingLevel,
   type ToolPreset,
   type ValidationContext,
 } from "./types.ts";
+
+export const DEFAULT_CHILD_TIMEOUT_SECONDS = 120;
+export const DEFAULT_RESUME_TIMEOUT_SECONDS = 60;
+export const MIN_CHILD_TIMEOUT_SECONDS = 30;
+export const MAX_CHILD_TIMEOUT_SECONDS = 600;
+export const MAX_RESUME_TIMEOUT_SECONDS = 180;
+export const MAX_AGENTS_PER_RUN = 3;
 
 const AgentSchema = Type.Object(
   {
     id: Type.String({ minLength: 1, maxLength: 32, pattern: "^[a-z][a-z0-9-]{0,31}$" }),
     profile: Type.Optional(StringEnum(PROFILES, {
-      description: "Built-in role only: scout, planner, reviewer, worker, or custom. For any other specialist role, use custom and describe it in systemPrompt; never invent a profile name.",
+      description: "Built-in role only: scout, reviewer, worker, or custom. For another narrow specialty, use custom plus systemPrompt.",
     })),
-    goal: Type.String({ minLength: 1 }),
-    dependsOn: Type.Optional(Type.Array(
-      Type.String({ minLength: 1, maxLength: 32, pattern: "^[a-z][a-z0-9-]{0,31}$" }),
-      { maxItems: 4 },
-    )),
-    systemPrompt: Type.Optional(Type.String()),
+    goal: Type.String({
+      minLength: 1,
+      description: "One bounded question or deliverable. For a resume, state only what remains and the stop condition.",
+    }),
+    resume: Type.Optional(Type.String({
+      minLength: 1,
+      maxLength: 128,
+      description: "Resume handle from a timed-out child. Resume calls must contain one agent and may override only id, goal, and timeoutSeconds.",
+    })),
+    systemPrompt: Type.Optional(Type.String({
+      description: "Additional role constraints for a narrow custom specialty; project rules belong in sharedContext.",
+    })),
     toolPreset: Type.Optional(StringEnum(TOOL_PRESETS)),
     tools: Type.Optional(Type.Array(StringEnum(BUILTIN_TOOLS), { maxItems: 7 })),
     model: Type.Optional(Type.String({ minLength: 1 })),
     thinking: Type.Optional(StringEnum(THINKING_LEVELS)),
-    timeoutSeconds: Type.Optional(Type.Integer({ minimum: 30, maximum: 3600 })),
-    dependencyContext: Type.Optional(Type.Object(
+    env: Type.Optional(Type.Record(
+      Type.String({ pattern: CHILD_ENV_NAME_PATTERN }),
+      Type.String({ maxLength: MAX_CHILD_ENV_VALUE_BYTES }),
       {
-        mode: StringEnum(DEPENDENCY_CONTEXT_MODES),
-        maxBytes: Type.Integer({ minimum: 4096, maximum: 262144 }),
+        maxProperties: MAX_CHILD_ENV_VARIABLES,
+        description: "Environment overrides for this child. Values are stored in the master transcript; avoid secrets and prefer inherited environment when possible.",
       },
-      { additionalProperties: false },
     )),
+    timeoutSeconds: Type.Optional(Type.Integer({
+      minimum: MIN_CHILD_TIMEOUT_SECONDS,
+      maximum: MAX_CHILD_TIMEOUT_SECONDS,
+      description: "Use only when this child needs a deadline different from the run default.",
+    })),
   },
   { additionalProperties: false },
 );
 
 export const DedeDelegateSchema = Type.Object(
   {
-    objective: Type.String({ minLength: 1 }),
-    sharedContext: Type.Optional(Type.String()),
-    agents: Type.Array(AgentSchema, { minItems: 1, maxItems: 5 }),
-    timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1800, maximum: 3600 })),
+    objective: Type.String({
+      minLength: 1,
+      description: "The decision or outcome the master will own after comparing the delegated evidence.",
+    }),
+    sharedContext: Type.Optional(Type.String({
+      description: "Concise known facts and relevant trusted project rules. Do not paste the full conversation or broad repository context.",
+    })),
+    agents: Type.Array(AgentSchema, { minItems: 1, maxItems: MAX_AGENTS_PER_RUN }),
+    timeoutSeconds: Type.Optional(Type.Integer({
+      minimum: MIN_CHILD_TIMEOUT_SECONDS,
+      maximum: MAX_CHILD_TIMEOUT_SECONDS,
+      description: `Run default in seconds; defaults to ${DEFAULT_CHILD_TIMEOUT_SECONDS}.`,
+    })),
   },
   { additionalProperties: false },
 );
@@ -60,13 +95,19 @@ const PRESET_TOOLS: Record<Exclude<ToolPreset, "custom">, BuiltinTool[]> = {
   none: [],
 };
 
-const PROFILE_DEFAULT_PRESET = {
+const PROFILE_DEFAULT_PRESET: Record<DedeProfile, Exclude<ToolPreset, "custom">> = {
   scout: "read-only",
-  planner: "read-only",
   reviewer: "read-only",
   worker: "coding",
   custom: "read-only",
-} as const;
+};
+
+const PROFILE_DEFAULT_THINKING: Record<DedeProfile, ThinkingLevel> = {
+  scout: "low",
+  reviewer: "medium",
+  worker: "medium",
+  custom: "low",
+};
 
 const MUTATION_TOOLS = new Set<BuiltinTool>(["bash", "edit", "write"]);
 const bytes = (value: string): number => Buffer.byteLength(value, "utf8");
@@ -123,19 +164,36 @@ export function resolveModelPattern(pattern: string, models: ModelLike[]): Model
   return preferModel(candidates.filter((model) => model.id.toLowerCase().includes(needle) || model.name?.toLowerCase().includes(needle)));
 }
 
+function compatibleModelHint(models: readonly ModelLike[], extensionProviders: ReadonlySet<string>): string {
+  const candidates = models
+    .filter((model) => !extensionProviders.has(model.provider))
+    .slice(0, 5)
+    .map((model) => `${model.provider}/${model.id}`);
+  return candidates.length > 0 ? ` Catalog candidates include: ${candidates.join(", ")}.` : "";
+}
+
 export function validateAndResolve(input: DedeDelegateParams, context: ValidationContext): ResolvedAgent[] {
   if (Number(process.env.PI_DEDE_DEPTH ?? "0") !== 0) {
     throw new Error("Recursive delegation is disabled (PI_DEDE_DEPTH is non-zero)");
   }
 
-  assertByteLimit("objective", input.objective, 12 * 1024);
-  assertByteLimit("sharedContext", input.sharedContext, 48 * 1024);
+  assertByteLimit("objective", input.objective, 4 * 1024);
+  assertByteLimit("sharedContext", input.sharedContext, 16 * 1024);
 
-  if (input.agents.length < 1 || input.agents.length > 5) {
-    throw new Error("agents must contain one to five items");
+  if (input.agents.length < 1 || input.agents.length > MAX_AGENTS_PER_RUN) {
+    throw new Error(`agents must contain one to ${MAX_AGENTS_PER_RUN} items`);
   }
-  if (input.timeoutSeconds !== undefined && (!Number.isInteger(input.timeoutSeconds) || input.timeoutSeconds < 1800 || input.timeoutSeconds > 3600)) {
-    throw new Error("timeoutSeconds must be an integer from 1800 to 3600");
+  if (input.timeoutSeconds !== undefined && (
+    !Number.isInteger(input.timeoutSeconds) ||
+    input.timeoutSeconds < MIN_CHILD_TIMEOUT_SECONDS ||
+    input.timeoutSeconds > MAX_CHILD_TIMEOUT_SECONDS
+  )) {
+    throw new Error(`timeoutSeconds must be an integer from ${MIN_CHILD_TIMEOUT_SECONDS} to ${MAX_CHILD_TIMEOUT_SECONDS}`);
+  }
+
+  const resumeRequests = input.agents.filter((agent) => agent.resume !== undefined);
+  if (resumeRequests.length > 0 && input.agents.length !== 1) {
+    throw new Error("A timed-out child resume must run alone");
   }
 
   const ids = new Set<string>();
@@ -148,31 +206,43 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
   const extensionProviders = new Set(context.extensionProviderIds ?? []);
   const resolved = input.agents.map((agent, index): ResolvedAgent => {
     const label = `agents[${index}]`;
-    const dependsOn = [...(agent.dependsOn ?? [])];
-    if (dependsOn.length > 4) throw new Error(`${label}.dependsOn must contain at most four items`);
-    if (new Set(dependsOn).size !== dependsOn.length) throw new Error(`${label}.dependsOn contains duplicates`);
-    for (const dependencyId of dependsOn) {
-      if (!/^[a-z][a-z0-9-]{0,31}$/.test(dependencyId)) throw new Error(`${label}.dependsOn contains an invalid agent id`);
-      if (dependencyId === agent.id) throw new Error(`${label}.dependsOn cannot include itself`);
-      if (!ids.has(dependencyId)) throw new Error(`${label}.dependsOn references unknown agent: ${dependencyId}`);
+    assertByteLimit(`${label}.goal`, agent.goal, 4 * 1024);
+    assertByteLimit(`${label}.systemPrompt`, agent.systemPrompt, 8 * 1024);
+    if (agent.timeoutSeconds !== undefined && (
+      !Number.isInteger(agent.timeoutSeconds) ||
+      agent.timeoutSeconds < MIN_CHILD_TIMEOUT_SECONDS ||
+      agent.timeoutSeconds > MAX_CHILD_TIMEOUT_SECONDS
+    )) {
+      throw new Error(`${label}.timeoutSeconds must be an integer from ${MIN_CHILD_TIMEOUT_SECONDS} to ${MAX_CHILD_TIMEOUT_SECONDS}`);
     }
 
-    assertByteLimit(`${label}.goal`, agent.goal, 12 * 1024);
-    assertByteLimit(`${label}.systemPrompt`, agent.systemPrompt, 32 * 1024);
-    if (agent.timeoutSeconds !== undefined && (!Number.isInteger(agent.timeoutSeconds) || agent.timeoutSeconds < 30 || agent.timeoutSeconds > 3600)) {
-      throw new Error(`${label}.timeoutSeconds must be an integer from 30 to 3600`);
-    }
-    if (agent.dependencyContext !== undefined) {
-      const unknownKeys = Object.keys(agent.dependencyContext).filter((key) => key !== "mode" && key !== "maxBytes");
-      if (unknownKeys.length > 0) {
-        throw new Error(`${label}.dependencyContext contains unsupported properties: ${unknownKeys.join(", ")}`);
+    if (agent.resume !== undefined) {
+      const unsupported = ["profile", "systemPrompt", "toolPreset", "tools", "model", "thinking", "env"]
+        .filter((key) => agent[key as keyof typeof agent] !== undefined);
+      if (unsupported.length > 0) {
+        throw new Error(`${label} cannot override ${unsupported.join(", ")} when resuming; the old child keeps its identity, model, thinking, environment overrides, and tools`);
       }
-      if (!(DEPENDENCY_CONTEXT_MODES as readonly string[]).includes(agent.dependencyContext.mode)) {
-        throw new Error(`${label}.dependencyContext.mode must be full or summary`);
+      const source = context.resumeLookup?.(agent.resume);
+      if (!source) {
+        throw new Error(`Resume handle is unavailable, expired, or already in use: ${agent.resume}`);
       }
-      if (!Number.isInteger(agent.dependencyContext.maxBytes) || agent.dependencyContext.maxBytes < 4096 || agent.dependencyContext.maxBytes > 262144) {
-        throw new Error(`${label}.dependencyContext.maxBytes must be an integer from 4096 to 262144`);
+      const timeoutSeconds = agent.timeoutSeconds ?? input.timeoutSeconds ?? DEFAULT_RESUME_TIMEOUT_SECONDS;
+      if (timeoutSeconds > MAX_RESUME_TIMEOUT_SECONDS) {
+        throw new Error(`Resumed children are short extensions and timeoutSeconds must not exceed ${MAX_RESUME_TIMEOUT_SECONDS}`);
       }
+      return {
+        ...source.agent,
+        id: agent.id,
+        goal: agent.goal,
+        tools: [...source.agent.tools],
+        env: { ...source.agent.env },
+        timeoutSeconds,
+        resume: {
+          handle: source.handle,
+          sessionId: source.sessionId,
+          attempt: source.attempt,
+        },
+      };
     }
 
     const profile = agent.profile ?? "custom";
@@ -190,51 +260,36 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     }
 
     const profileDefaults = context.profileDefaults?.[profile];
+    const configuredEnv = profileDefaults?.env === undefined
+      ? {}
+      : validateChildEnv(profileDefaults.env, `profiles.${profile}.env`);
+    const requestEnv = agent.env === undefined ? {} : validateChildEnv(agent.env, `${label}.env`);
+    const env = validateChildEnv(mergeChildEnv([configuredEnv, requestEnv]), `${label}.effectiveEnv`);
     const modelPattern = agent.model ?? profileDefaults?.model;
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
     if (extensionProviders.has(model.provider)) {
-      throw new Error(`Model provider ${model.provider} is registered by an extension and is unavailable to isolated children`);
+      throw new Error(
+        `Model provider ${model.provider} is registered by an extension and unavailable to isolated children. ` +
+        `Set ${label}.model or configure profiles.${profile}.model in pi-dede.json to a built-in provider model.` +
+        compatibleModelHint(context.models, extensionProviders),
+      );
     }
 
     return {
       id: agent.id,
       profile,
       goal: agent.goal,
-      dependsOn,
       systemPrompt: agent.systemPrompt,
       toolPreset,
       tools,
       model: `${model.provider}/${model.id}`,
-      thinking: agent.thinking ?? profileDefaults?.thinking ?? context.thinkingLevel,
-      timeoutSeconds: agent.timeoutSeconds ?? input.timeoutSeconds ?? 1800,
-      ...(agent.dependencyContext ? {
-        dependencyContext: {
-          mode: agent.dependencyContext.mode,
-          maxBytes: agent.dependencyContext.maxBytes,
-        },
-      } : {}),
+      thinking: agent.thinking ?? profileDefaults?.thinking ?? PROFILE_DEFAULT_THINKING[profile],
+      env,
+      timeoutSeconds: agent.timeoutSeconds ?? input.timeoutSeconds ?? DEFAULT_CHILD_TIMEOUT_SECONDS,
       mutationCapable: tools.some((tool) => MUTATION_TOOLS.has(tool)),
     };
   });
-
-  const remainingDependencies = new Map(resolved.map((agent) => [agent.id, agent.dependsOn.length]));
-  const dependents = new Map(resolved.map((agent) => [agent.id, [] as string[]]));
-  for (const agent of resolved) {
-    for (const dependencyId of agent.dependsOn) dependents.get(dependencyId)!.push(agent.id);
-  }
-  const ready = resolved.filter((agent) => agent.dependsOn.length === 0).map((agent) => agent.id);
-  let visited = 0;
-  while (ready.length > 0) {
-    const id = ready.shift()!;
-    visited++;
-    for (const dependentId of dependents.get(id)!) {
-      const remaining = remainingDependencies.get(dependentId)! - 1;
-      remainingDependencies.set(dependentId, remaining);
-      if (remaining === 0) ready.push(dependentId);
-    }
-  }
-  if (visited !== resolved.length) throw new Error("Agent dependencies must not contain a cycle");
 
   if (resolved.length > 1 && resolved.some((agent) => agent.mutationCapable)) {
     throw new Error("Mutation-capable agents must run alone; multi-agent runs must be entirely read-only");

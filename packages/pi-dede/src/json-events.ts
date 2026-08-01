@@ -4,6 +4,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { ChildUsage, DedeActivity, DetailedUsage } from "./types.ts";
 
 const MAX_JSON_LINE_BYTES = 2 * 1024 * 1024;
+const MAX_PARTIAL_TEXT_BYTES = 32 * 1024;
 const MAX_ACTIVITY = 100;
 
 function zeroDetailedUsage(): DetailedUsage {
@@ -78,6 +79,7 @@ export interface CollectedProtocol {
 export class PiJsonCollector {
   private readonly decoder = new StringDecoder("utf8");
   private buffer = "";
+  private partialText = "";
   private discardingOversizedLine = false;
   private readonly seenAssistantMessages = new Set<string>();
   private readonly state: CollectedProtocol = {
@@ -100,6 +102,9 @@ export class PiJsonCollector {
     this.consume(this.decoder.end());
     if (!this.discardingOversizedLine && this.buffer.trim()) this.processLine(this.buffer);
     this.buffer = "";
+    if (this.partialText.trim()) {
+      this.state.finalText = `${this.partialText}\n\n[Partial response interrupted before finalization.]`;
+    }
     return {
       ...this.state,
       usage: { ...this.state.usage, cost: { ...this.state.usage.cost } },
@@ -166,10 +171,24 @@ export class PiJsonCollector {
     }
 
     switch (event.type) {
+      case "message_start": {
+        const message = object(event.message);
+        if (message?.role === "assistant") this.partialText = "";
+        break;
+      }
       case "message_update": {
+        // Keep a bounded fallback so a timed-out child can show how close it was, but never
+        // emit answer deltas as progress or trigger per-token renders.
         const delta = object(event.assistantMessageEvent);
         if (delta?.type === "text_delta" && typeof delta.delta === "string") {
-          this.onProgress?.(`responding: ${short(delta.delta.replace(/\s+/g, " ").trim(), 80)}`);
+          const combined = Buffer.from(this.partialText + delta.delta, "utf8");
+          if (combined.length <= MAX_PARTIAL_TEXT_BYTES) {
+            this.partialText += delta.delta;
+          } else {
+            let end = MAX_PARTIAL_TEXT_BYTES;
+            while (end > 0 && (combined[end] & 0xc0) === 0x80) end--;
+            this.partialText = combined.subarray(0, end).toString("utf8");
+          }
         }
         break;
       }
@@ -186,6 +205,7 @@ export class PiJsonCollector {
         this.state.model = message.model ? `${message.provider ? `${message.provider}/` : ""}${message.model}` : this.state.model;
         this.state.stopReason = message.stopReason ?? this.state.stopReason;
         this.state.errorMessage = message.errorMessage ?? this.state.errorMessage;
+        this.partialText = "";
         this.onProgress?.("responded");
         break;
       }
@@ -204,8 +224,7 @@ export class PiJsonCollector {
         break;
       }
       case "tool_execution_update":
-        // Tool output can be large or sensitive; expose only a fixed activity label.
-        this.onProgress?.(`${String(event.toolName ?? "tool")} working`);
+        // Tool output can be large or sensitive. Start/end events provide enough progress.
         break;
       case "tool_execution_end":
         this.onProgress?.(`${String(event.toolName ?? "tool")} finished`);

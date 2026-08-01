@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import dedeExtension from "../src/index.ts";
 import { ArtifactManager, ChildProcessManager, runChild } from "../src/runner.ts";
@@ -11,25 +11,25 @@ const originalScript = process.argv[1];
 
 afterEach(() => {
   process.argv[1] = originalScript;
-  delete process.env.PI_DEDE_TEST_LOG;
+  delete process.env.DEDE_TEST_LOG;
 });
 
 const agent: ResolvedAgent = {
   id: "scout",
   profile: "scout",
   goal: "inspect",
-  dependsOn: [],
   toolPreset: "read-only",
   tools: ["read", "grep", "find", "ls"],
   model: "fake/model",
   thinking: "low",
-  timeoutSeconds: 1800,
+  env: {},
+  timeoutSeconds: 120,
   mutationCapable: false,
 };
 
 describe("fake Pi integration", () => {
-  it("waits for dependencies and passes their final results to the dependent", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "pi-dede-workflow-"));
+  it("runs independent evidence agents in parallel without forwarding sibling output", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-parallel-"));
     const fake = join(directory, "fake-pi.mjs");
     const logPath = join(directory, "events.jsonl");
     await writeFile(fake, `
@@ -37,18 +37,13 @@ describe("fake Pi integration", () => {
       const id = process.env.PI_DEDE_AGENT_ID;
       const taskArg = process.argv.find((arg) => arg.startsWith("@"));
       const task = readFileSync(taskArg.slice(1), "utf8");
-      const log = (event) => appendFileSync(process.env.PI_DEDE_TEST_LOG, JSON.stringify({ id, event, task }) + "\\n");
+      const log = (event) => appendFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({
+        id, event, task, childScope: process.env.CHILD_SCOPE
+      }) + "\\n");
       log("start");
-      if (id === "source") await new Promise((resolve) => setTimeout(resolve, 75));
+      if (id === "slow") await new Promise((resolve) => setTimeout(resolve, 250));
       log("end");
-      const text = id === "source"
-        ? "preamble\\n## Summary\\nSOURCE FINAL RESULT\\n## Evidence\\nDETAILS MUST BE FILTERED"
-        : "DEPENDENT SAW SOURCE: " + (
-          task.includes("SOURCE FINAL RESULT") &&
-          task.includes("mode=summary") &&
-          !task.includes("DETAILS MUST BE FILTERED") &&
-          !task.includes("preamble")
-        );
+      const text = "## Answer\\n- " + id.toUpperCase() + " RESULT";
       const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
       console.log(JSON.stringify({ type: "message_end", message: {
@@ -59,7 +54,7 @@ describe("fake Pi integration", () => {
     `);
 
     process.argv[1] = fake;
-    process.env.PI_DEDE_TEST_LOG = logPath;
+    process.env.DEDE_TEST_LOG = logPath;
     let tool: any;
     let shutdown: any;
     dedeExtension({
@@ -69,7 +64,6 @@ describe("fake Pi integration", () => {
     const ctx = {
       cwd: directory,
       model: { provider: "fake", id: "model" },
-      thinkingLevel: "low",
       modelRegistry: {
         getAll: () => [{ provider: "fake", id: "model" }],
         getRegisteredProviderIds: () => [],
@@ -81,34 +75,130 @@ describe("fake Pi integration", () => {
 
     try {
       const result = await tool.execute("call", {
-        objective: "Run a dependency workflow",
+        objective: "Collect independent evidence for a master-owned decision",
+        sharedContext: "Inspect only the assigned question.",
         agents: [
           {
-            id: "dependent",
-            goal: "Use the source result",
-            dependsOn: ["source"],
+            id: "slow",
+            profile: "scout",
+            goal: "Answer bounded question A and stop",
             toolPreset: "none",
             model: "fake/model",
-            thinking: "low",
-            timeoutSeconds: 30,
-            dependencyContext: { mode: "summary", maxBytes: 4096 },
+            env: { CHILD_SCOPE: "slow-only" },
           },
-          { id: "source", goal: "Produce the source result", toolPreset: "none", model: "fake/model", thinking: "low" },
+          {
+            id: "fast",
+            profile: "scout",
+            goal: "Answer bounded question B and stop",
+            toolPreset: "none",
+            model: "fake/model",
+            env: { CHILD_SCOPE: "fast-only" },
+          },
         ],
-        timeoutSeconds: 1800,
       }, undefined, undefined, ctx);
 
-      expect(result.details.results.map((child: any) => child.id)).toEqual(["dependent", "source"]);
-      expect(result.details.results[0]).toMatchObject({ status: "succeeded", dependsOn: ["source"], finalText: "DEPENDENT SAW SOURCE: true" });
+      expect(result.details.version).toBe(2);
+      expect(result.details.results.map((child: any) => child.id)).toEqual(["slow", "fast"]);
+      expect(result.details.results.every((child: any) => child.status === "succeeded" && child.timeoutSeconds === 120)).toBe(true);
       const logged = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-      expect(logged.map(({ id, event }: any) => `${id}:${event}`)).toEqual([
-        "source:start", "source:end", "dependent:start", "dependent:end",
-      ]);
-      const dependentTask = logged.find((entry: any) => entry.id === "dependent" && entry.event === "start").task;
-      expect(dependentTask).toContain("SOURCE FINAL RESULT");
-      expect(dependentTask).toContain("kept 30/76 UTF-8 bytes");
-      expect(dependentTask).not.toContain("DETAILS MUST BE FILTERED");
+      const events = logged.map(({ id, event }: any) => `${id}:${event}`);
+      expect(events.indexOf("fast:start")).toBeLessThan(events.indexOf("slow:end"));
+      expect(logged.find((entry: any) => entry.id === "slow" && entry.event === "start").childScope).toBe("slow-only");
+      expect(logged.find((entry: any) => entry.id === "fast" && entry.event === "start").childScope).toBe("fast-only");
+      expect(result.details.results[0].env).toBeUndefined();
+      const fastTask = logged.find((entry: any) => entry.id === "fast" && entry.event === "start").task;
+      expect(fastTask).not.toContain("SLOW RESULT");
+      expect(fastTask).toContain("# Your bounded assignment");
     } finally {
+      await shutdown?.({}, ctx);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("resumes the same private child conversation after a timeout", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-resume-"));
+    const fake = join(directory, "fake-pi.mjs");
+    await writeFile(fake, `
+      import { existsSync, writeFileSync } from "node:fs";
+      const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
+      const sessionPath = value("--session");
+      const state = sessionPath + ".state";
+      if (!existsSync(state)) {
+        writeFileSync(state, "evidence collected before timeout");
+        setInterval(() => undefined, 1000);
+      } else {
+        const usage = { input: 2, output: 1, cacheRead: 1, cacheWrite: 0, totalTokens: 4,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+        console.log(JSON.stringify({ type: "message_end", message: {
+          role: "assistant", content: [{ type: "text", text: "## Answer\\n- reused old session evidence" }],
+          provider: "fake", model: "model", responseId: "resume", timestamp: Date.now(), stopReason: "stop", usage
+        }}));
+        console.log(JSON.stringify({ type: "agent_end" }));
+      }
+    `);
+
+    process.argv[1] = fake;
+    let tool: any;
+    let shutdown: any;
+    dedeExtension({
+      registerTool(value: any) { tool = value; },
+      on(event: string, handler: any) { if (event === "session_shutdown") shutdown = handler; },
+    } as unknown as ExtensionAPI);
+    const ctx = {
+      cwd: directory,
+      model: { provider: "fake", id: "model" },
+      modelRegistry: {
+        getAll: () => [{ provider: "fake", id: "model" }],
+        getRegisteredProviderIds: () => [],
+      },
+      sessionManager: { getSessionId: () => "resume-parent" },
+      isProjectTrusted: () => false,
+      ui: { setStatus: () => undefined },
+    };
+
+    const nativeSetTimeout = globalThis.setTimeout;
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: TimerHandler, timeout?: number, ...args: any[]) =>
+      nativeSetTimeout(handler, Math.min(timeout ?? 0, 150), ...args)) as typeof setTimeout);
+
+    try {
+      const first = await tool.execute("first", {
+        objective: "Collect one bounded fact",
+        agents: [{
+          id: "slow",
+          profile: "scout",
+          goal: "Collect the fact and return it",
+          toolPreset: "none",
+          model: "fake/model",
+          timeoutSeconds: 30,
+        }],
+      }, undefined, undefined, ctx);
+      const timedOut = first.details.results[0];
+      expect(timedOut).toMatchObject({ status: "timed_out", timeoutSeconds: 30 });
+      expect(timedOut.resumeHandle).toMatch(/^dede_/);
+      expect(first.content[0].text).toContain(`"resume": "${timedOut.resumeHandle}"`);
+
+      const resumed = await tool.execute("resume", {
+        objective: "Finish the answer from existing evidence",
+        agents: [{
+          id: "finish",
+          goal: "Return the already collected fact and stop",
+          resume: timedOut.resumeHandle,
+          timeoutSeconds: 30,
+        }],
+      }, undefined, undefined, ctx);
+      expect(resumed.details.results[0]).toMatchObject({
+        id: "finish",
+        status: "succeeded",
+        resumedFrom: timedOut.resumeHandle,
+        finalText: "## Answer\n- reused old session evidence",
+      });
+
+      await expect(tool.execute("used", {
+        objective: "Do not reuse consumed handles",
+        agents: [{ id: "again", goal: "finish", resume: timedOut.resumeHandle }],
+      }, undefined, undefined, ctx)).rejects.toThrow(/unavailable, expired, or already in use/);
+    } finally {
+      timeoutSpy.mockRestore();
       await shutdown?.({}, ctx);
       await rm(directory, { recursive: true, force: true });
     }
@@ -132,6 +222,9 @@ describe("fake Pi integration", () => {
         cwd: directory,
         systemPromptPath: system,
         taskPath: task,
+        sessionDirectory: directory,
+        sessionPath: join(directory, "timeout-session.jsonl"),
+        childSessionId: "11111111-1111-4111-8111-111111111111",
         runId: "timeout-run",
         parentSessionId: "parent",
         timeoutSeconds: 0.02,
@@ -140,6 +233,7 @@ describe("fake Pi integration", () => {
       });
       expect(result).toMatchObject({
         status: "timed_out",
+        timeoutSeconds: 0.02,
         errorMessage: "Timed out after 0.02 seconds",
       });
       expect(manager.size).toBe(0);
@@ -162,7 +256,7 @@ describe("fake Pi integration", () => {
         cost: { input: .1, output: .2, cacheRead: .01, cacheWrite: .02, total: .33 } };
       console.log(JSON.stringify({ type: "tool_execution_start", toolName: "read", args: { path: "src/index.ts" } }));
       console.log(JSON.stringify({ type: "message_end", message: {
-        role: "assistant", content: [{ type: "thinking", thinking: "secret" }, { type: "text", text: "## Summary\\nDone" }],
+        role: "assistant", content: [{ type: "thinking", thinking: "secret" }, { type: "text", text: "## Answer\\n- Done" }],
         provider: "fake", model: "model", responseId: "one", timestamp: Date.now(), stopReason: "stop", usage
       }}));
       console.log(JSON.stringify({ type: "agent_end" }));
@@ -177,16 +271,20 @@ describe("fake Pi integration", () => {
         cwd: directory,
         systemPromptPath: system,
         taskPath: task,
+        sessionDirectory: directory,
+        sessionPath: join(directory, "success-session.jsonl"),
+        childSessionId: "22222222-2222-4222-8222-222222222222",
         runId: "run",
         parentSessionId: "parent",
-        timeoutSeconds: 1800,
+        timeoutSeconds: 120,
         manager,
         artifacts,
       });
       expect(result.status).toBe("succeeded");
-      expect(result.finalText).toBe("## Summary\nDone");
+      expect(result.finalText).toBe("## Answer\n- Done");
       expect(result.finalText).not.toContain("secret");
       expect(result.tools).toEqual(["read", "grep", "find", "ls"]);
+      expect(result.timeoutSeconds).toBe(120);
       expect(result.usage).toMatchObject({ input: 12, output: 5, cost: 0.33, turns: 1 });
       expect(detailedUsage.cost.total).toBe(0.33);
       expect(manager.size).toBe(0);

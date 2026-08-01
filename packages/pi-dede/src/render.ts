@@ -1,5 +1,6 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
+import { DEFAULT_CHILD_TIMEOUT_SECONDS, DEFAULT_RESUME_TIMEOUT_SECONDS } from "./schema.ts";
 import type { DedeDelegateParams, DedeToolDetails } from "./types.ts";
 
 function preview(value: string, max = 54): string {
@@ -18,14 +19,15 @@ function seconds(ms: number): string {
 
 export function renderDedeCall(args: DedeDelegateParams, theme: any, context: any): Text {
   const agents = args.agents ?? [];
-  const mode = agents.some((agent) => agent.dependsOn?.length) ? "workflow" : agents.length > 1 ? "parallel" : "single";
+  const mode = agents[0]?.resume ? "short resume" : agents.length > 1 ? "parallel evidence" : agents[0]?.profile === "worker" ? "worker" : "single evidence";
   const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
   let text = theme.fg("toolTitle", theme.bold("Đệ Đệ  ")) + theme.fg("accent", `${mode} · ${agents.length} agent${agents.length === 1 ? "" : "s"}`);
   for (const agent of agents) {
     const profile = agent.profile ?? "custom";
-    const preset = agent.toolPreset ?? (profile === "worker" ? "coding" : "read-only");
-    const dependency = agent.dependsOn?.length ? ` after ${agent.dependsOn.join(",")}` : "";
-    text += `\n  ${theme.fg("accent", agent.id.padEnd(18))} ${theme.fg("muted", preset.padEnd(9))} ${theme.fg("dim", preview(agent.goal))}${theme.fg("muted", dependency)}`;
+    const preset = agent.resume ? "existing" : agent.toolPreset ?? (profile === "worker" ? "coding" : "read-only");
+    const timeout = agent.timeoutSeconds ?? args.timeoutSeconds ?? (agent.resume ? DEFAULT_RESUME_TIMEOUT_SECONDS : DEFAULT_CHILD_TIMEOUT_SECONDS);
+    const resume = agent.resume ? `resume ${preview(agent.resume, 18)} · ` : "";
+    text += `\n  ${theme.fg("accent", agent.id.padEnd(18))} ${theme.fg("muted", preset.padEnd(9))} ${theme.fg("dim", `${resume}${timeout}s · ${preview(agent.goal)}`)}`;
   }
   component.setText(text);
   return component;
@@ -51,11 +53,11 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
 
   if (options.isPartial) {
     const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
-    let text = theme.fg("toolTitle", theme.bold("Đệ Đệ  ")) + theme.fg("accent", `${done}/${details.results.length} done · ${running} running`);
+    let text = theme.fg("toolTitle", theme.bold("Đệ Đệ  ")) + theme.fg("accent", `${done}/${details.results.length} done · ${running} running`) + theme.fg("dim", " · Esc to cancel");
     for (const child of details.results) {
       const latest = child.activity.at(-1)?.text;
-      const runtime = `· ${child.model} · ${child.thinking} ·`;
-      text += `\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", runtime)} ${theme.fg("dim", latest ?? child.status)}`;
+      const runtime = `${child.resumedFrom ? "resumed · " : ""}${child.model} · ${child.thinking} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s`;
+      text += `\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", `· ${runtime} ·`)} ${theme.fg("dim", latest ?? child.status)}`;
     }
     component.setText(text);
     return component;
@@ -64,7 +66,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
   if (!options.expanded) {
     let text = `${details.status === "succeeded" ? theme.fg("success", "✓") : theme.fg("warning", "◐")} ${theme.fg("toolTitle", theme.bold("Đệ Đệ  "))}${theme.fg("accent", `${succeeded}/${details.results.length} succeeded`)}`;
     for (const child of details.results) {
-      const first = child.finalText.split("\n").filter(Boolean).slice(0, 2).join(" ");
+      const first = child.finalText.split("\n").filter((line) => line.trim() && !line.trim().startsWith("#")).slice(0, 2).join(" ");
       const stats = `${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tok${child.usage.cost ? ` · $${child.usage.cost.toFixed(4)}` : ""} · ${seconds(child.durationMs)}`;
       text += `\n\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", child.status)}`;
       text += `\n    ${theme.fg("toolOutput", preview(first || child.errorMessage || "(no output)", 100))}`;
@@ -78,26 +80,26 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
   const args = context.args as DedeDelegateParams | undefined;
   if (args?.objective) {
     container.addChild(new Spacer(1));
-    container.addChild(new Text(theme.fg("muted", "Objective: ") + theme.fg("dim", args.objective), 0, 0));
+    container.addChild(new Text(theme.fg("muted", "Master-owned objective: ") + theme.fg("dim", args.objective), 0, 0));
   }
 
   for (const child of details.results) {
     container.addChild(new Spacer(1));
     container.addChild(new Text(`${icon(child.status, theme)} ${theme.fg("accent", theme.bold(child.id))} ${theme.fg("muted", `${child.profile} · ${child.model} · ${child.thinking}`)}`, 0, 0));
-    container.addChild(new Text(theme.fg("muted", "Goal: ") + theme.fg("dim", child.goal), 0, 0));
-    if (child.dependsOn?.length) container.addChild(new Text(theme.fg("muted", "Depends on: ") + theme.fg("dim", child.dependsOn.join(", ")), 0, 0));
-    container.addChild(new Text(theme.fg("muted", "Tools: ") + theme.fg("dim", child.tools.join(", ") || "none"), 0, 0));
+    container.addChild(new Text(theme.fg("muted", "Assignment: ") + theme.fg("dim", child.goal), 0, 0));
+    container.addChild(new Text(theme.fg("muted", "Budget: ") + theme.fg("dim", `${child.timeoutSeconds}s · ${child.tools.join(", ") || "no tools"}`), 0, 0));
     if (child.activity.length) {
       const activity = child.activity.map((item) => `  ${item.type === "tool" ? "→" : "·"} ${item.text}`).join("\n");
       container.addChild(new Text(theme.fg("dim", activity), 0, 0));
     }
     if (child.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${child.errorMessage}`), 0, 0));
+    if (child.resumeHandle) container.addChild(new Text(theme.fg("warning", `Short resume: ${child.resumeHandle} · 30-180s · use only if close to completion`), 0, 0));
     if (child.finalText) {
       container.addChild(new Spacer(1));
       container.addChild(new Markdown(child.finalText, 0, 0, getMarkdownTheme()));
     }
     if (child.artifactPath) container.addChild(new Text(theme.fg("dim", `Full output: ${child.artifactPath}`), 0, 0));
-    container.addChild(new Text(theme.fg("dim", `${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tokens · $${child.usage.cost.toFixed(4)} · ${seconds(child.durationMs)}`), 0, 0));
+    container.addChild(new Text(theme.fg("dim", `${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tokens · $${child.usage.cost.toFixed(4)} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s`), 0, 0));
   }
   return container;
 }

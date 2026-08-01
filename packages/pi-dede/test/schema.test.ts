@@ -1,11 +1,16 @@
 import { Check } from "typebox/value";
 import { afterEach, describe, expect, it } from "vitest";
-import { DedeDelegateSchema, isMutationCapable, resolveModelPattern, validateAndResolve } from "../src/schema.ts";
+import {
+  DEFAULT_CHILD_TIMEOUT_SECONDS,
+  DedeDelegateSchema,
+  isMutationCapable,
+  resolveModelPattern,
+  validateAndResolve,
+} from "../src/schema.ts";
 import type { DedeDelegateParams, ValidationContext } from "../src/types.ts";
 
 const context: ValidationContext = {
   model: { provider: "test", id: "main" },
-  thinkingLevel: "high",
   models: [
     { provider: "test", id: "main", name: "Main" },
     { provider: "other", id: "small", name: "Small" },
@@ -14,85 +19,115 @@ const context: ValidationContext = {
 
 const valid = (overrides: Partial<DedeDelegateParams> = {}): DedeDelegateParams => ({
   objective: "Inspect the project",
-  agents: [{ id: "scout", goal: "Find the entry point" }],
+  agents: [{ id: "scout", goal: "Answer one bounded question in src/auth and stop" }],
   ...overrides,
 });
 
 afterEach(() => { delete process.env.PI_DEDE_DEPTH; });
 
 describe("public schema", () => {
-  it("accepts the guardrail fields and keeps dependencyContext closed", () => {
+  it("accepts v0.2 budgets and rejects removed workflow fields", () => {
     const input = {
       objective: "Inspect",
-      agents: [{
-        id: "a",
-        goal: "x",
-        timeoutSeconds: 30,
-        dependencyContext: { mode: "summary", maxBytes: 4096 },
-      }],
-      timeoutSeconds: 1800,
+      agents: [{ id: "a", goal: "x", timeoutSeconds: 30, env: { CHILD_MODE: "inspect" } }],
+      timeoutSeconds: 600,
     };
     expect(Check(DedeDelegateSchema, input)).toBe(true);
     expect(Check(DedeDelegateSchema, {
       ...input,
-      agents: [{ ...input.agents[0], dependencyContext: { ...input.agents[0].dependencyContext, extra: true } }],
+      agents: [{ ...input.agents[0], dependsOn: ["b"] }],
     })).toBe(false);
     expect(Check(DedeDelegateSchema, {
       ...input,
-      agents: [{ ...input.agents[0], dependencyContext: { maxBytes: 4096 } }],
+      agents: [{ ...input.agents[0], profile: "planner" }],
     })).toBe(false);
     expect(Check(DedeDelegateSchema, {
       ...input,
-      agents: [{ ...input.agents[0], timeoutSeconds: 29 }],
+      agents: [{ ...input.agents[0], timeoutSeconds: 601 }],
+    })).toBe(false);
+    expect(Check(DedeDelegateSchema, {
+      objective: "Finish",
+      agents: [{ id: "a", goal: "Return the remaining evidence", resume: "dede_handle", timeoutSeconds: 60 }],
+    })).toBe(true);
+    expect(Check(DedeDelegateSchema, {
+      ...input,
+      agents: [{ id: "a", goal: "x", env: { CHILD_MODE: 1 } }],
     })).toBe(false);
   });
 });
 
 describe("semantic validation", () => {
-  it("applies profile defaults and inherits model/thinking", () => {
+  it("uses bounded built-in defaults instead of inheriting master thinking", () => {
     const [agent] = validateAndResolve(valid(), context);
     expect(agent).toMatchObject({
       profile: "custom",
       toolPreset: "read-only",
       tools: ["read", "grep", "find", "ls"],
       model: "test/main",
-      thinking: "high",
+      thinking: "low",
+      timeoutSeconds: DEFAULT_CHILD_TIMEOUT_SECONDS,
       mutationCapable: false,
     });
   });
 
-  it("resolves planners as read-only agents", () => {
-    const [agent] = validateAndResolve(valid({ agents: [{ id: "plan", profile: "planner", goal: "Plan the change" }] }), context);
-    expect(agent).toMatchObject({
-      profile: "planner",
-      toolPreset: "read-only",
-      tools: ["read", "grep", "find", "ls"],
-      mutationCapable: false,
-    });
+  it("resolves profile capabilities and thinking defaults", () => {
+    const [reviewer] = validateAndResolve(valid({
+      agents: [{ id: "review", profile: "reviewer", goal: "Review only token expiry" }],
+    }), context);
+    expect(reviewer).toMatchObject({ profile: "reviewer", thinking: "medium", toolPreset: "read-only", mutationCapable: false });
+
+    const [worker] = validateAndResolve(valid({
+      agents: [{ id: "worker", profile: "worker", goal: "Apply the supplied one-file change" }],
+    }), context);
+    expect(worker).toMatchObject({ profile: "worker", thinking: "medium", toolPreset: "coding", mutationCapable: true });
   });
 
-  it("applies profile defaults below explicit fields and above master inheritance", () => {
+  it("applies profile defaults below explicit fields and above built-in defaults", () => {
     const defaults: ValidationContext = {
       ...context,
       profileDefaults: {
-        scout: { model: "other/small", thinking: "low" },
+        scout: { model: "other/small", thinking: "minimal", env: { CONFIG_ONLY: "yes", SHARED: "config" } },
       },
     };
 
     const [configured] = validateAndResolve(valid({ agents: [{ id: "a", profile: "scout", goal: "x" }] }), defaults);
-    expect(configured).toMatchObject({ model: "other/small", thinking: "low" });
+    expect(configured).toMatchObject({
+      model: "other/small",
+      thinking: "minimal",
+      env: { CONFIG_ONLY: "yes", SHARED: "config" },
+    });
 
     const [explicit] = validateAndResolve(valid({ agents: [{
       id: "a",
       profile: "scout",
       goal: "x",
       model: "test/main",
-      thinking: "max",
+      thinking: "high",
+      env: { REQUEST_ONLY: "yes", SHARED: "request" },
     }] }), defaults);
-    expect(explicit).toMatchObject({ model: "test/main", thinking: "max" });
+    expect(explicit).toMatchObject({
+      model: "test/main",
+      thinking: "high",
+      env: { CONFIG_ONLY: "yes", REQUEST_ONLY: "yes", SHARED: "request" },
+    });
+  });
 
-    const [inherited] = validateAndResolve(valid({ agents: [{ id: "a", profile: "reviewer", goal: "x" }] }), defaults);
-    expect(inherited).toMatchObject({ model: "test/main", thinking: "high" });
+  it("rejects protected and malformed environment overrides", () => {
+    expect(() => validateAndResolve(valid({
+      agents: [{ id: "a", goal: "x", env: { NODE_OPTIONS: "--require=/tmp/inject.js" } }],
+    }), context)).toThrow(/protected variable: NODE_OPTIONS/);
+    expect(() => validateAndResolve(valid({
+      agents: [{ id: "a", goal: "x", env: { "NOT-PORTABLE": "value" } }],
+    }), context)).toThrow(/invalid variable name/);
+    expect(() => validateAndResolve(valid({
+      agents: [{ id: "a", goal: "x", env: { TOKEN: "x\0y" } }],
+    }), context)).toThrow(/NUL bytes/);
+
+    const configured = Object.fromEntries(Array.from({ length: 33 }, (_, index) => [`CONFIG_${index}`, "x"]));
+    const requested = Object.fromEntries(Array.from({ length: 32 }, (_, index) => [`REQUEST_${index}`, "x"]));
+    expect(() => validateAndResolve(valid({
+      agents: [{ id: "a", profile: "scout", goal: "x", env: requested }],
+    }), { ...context, profileDefaults: { scout: { env: configured } } })).toThrow(/effectiveEnv.*at most 64/);
   });
 
   it("requires explicit tools for custom and rejects tools on other presets", () => {
@@ -110,79 +145,87 @@ describe("semantic validation", () => {
     expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", toolPreset: "custom", tools: ["read", "read"] }] }), context)).toThrow(/duplicates/);
   });
 
-  it("accepts top-level timeout values from 1800 through 3600 seconds", () => {
-    expect(() => validateAndResolve(valid({ timeoutSeconds: 1800 }), context)).not.toThrow();
-    expect(() => validateAndResolve(valid({ timeoutSeconds: 3600 }), context)).not.toThrow();
-    expect(() => validateAndResolve(valid({ timeoutSeconds: 1799 }), context)).toThrow(/1800 to 3600/);
-    expect(() => validateAndResolve(valid({ timeoutSeconds: 3601 }), context)).toThrow(/1800 to 3600/);
+  it("accepts timeout values from 30 through 600 seconds", () => {
+    expect(() => validateAndResolve(valid({ timeoutSeconds: 30 }), context)).not.toThrow();
+    expect(() => validateAndResolve(valid({ timeoutSeconds: 600 }), context)).not.toThrow();
+    expect(() => validateAndResolve(valid({ timeoutSeconds: 29 }), context)).toThrow(/30 to 600/);
+    expect(() => validateAndResolve(valid({ timeoutSeconds: 601 }), context)).toThrow(/30 to 600/);
   });
 
-  it("resolves timeout precedence per agent and validates the wider agent range", () => {
-    expect(validateAndResolve(valid(), context)[0].timeoutSeconds).toBe(1800);
-    expect(validateAndResolve(valid({ timeoutSeconds: 2400 }), context)[0].timeoutSeconds).toBe(2400);
+  it("resolves per-agent timeout ahead of run default", () => {
+    expect(validateAndResolve(valid(), context)[0].timeoutSeconds).toBe(120);
+    expect(validateAndResolve(valid({ timeoutSeconds: 240 }), context)[0].timeoutSeconds).toBe(240);
     expect(validateAndResolve(valid({
-      timeoutSeconds: 2400,
-      agents: [{ id: "a", goal: "x", timeoutSeconds: 30 }],
-    }), context)[0].timeoutSeconds).toBe(30);
-    expect(validateAndResolve(valid({ agents: [{ id: "a", goal: "x", timeoutSeconds: 3600 }] }), context)[0].timeoutSeconds).toBe(3600);
-    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", timeoutSeconds: 29 }] }), context)).toThrow(/30 to 3600/);
-    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", timeoutSeconds: 30.5 }] }), context)).toThrow(/30 to 3600/);
+      timeoutSeconds: 240,
+      agents: [{ id: "a", goal: "x", timeoutSeconds: 45 }],
+    }), context)[0].timeoutSeconds).toBe(45);
+    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", timeoutSeconds: 30.5 }] }), context)).toThrow(/30 to 600/);
   });
 
-  it("resolves and validates dependency context policies", () => {
-    const policy = { mode: "summary" as const, maxBytes: 4096 };
-    const [agent] = validateAndResolve(valid({ agents: [{ id: "a", goal: "x", dependencyContext: policy }] }), context);
-    expect(agent.dependencyContext).toEqual(policy);
-    expect(agent.dependencyContext).not.toBe(policy);
-    expect(() => validateAndResolve(valid({
-      agents: [{ id: "a", goal: "x", dependencyContext: { mode: "full", maxBytes: 4095 } }],
-    }), context)).toThrow(/4096 to 262144/);
-    expect(() => validateAndResolve(valid({
-      agents: [{ id: "a", goal: "x", dependencyContext: { mode: "full", maxBytes: 262145 } }],
-    }), context)).toThrow(/4096 to 262144/);
-    expect(() => validateAndResolve(valid({
+  it("resumes one timed-out child with its original identity and a short deadline", () => {
+    const sourceAgent = validateAndResolve(valid({
       agents: [{
-        id: "a",
-        goal: "x",
-        dependencyContext: { mode: "full", maxBytes: 4096, extra: true } as never,
+        id: "old",
+        profile: "reviewer",
+        goal: "Review token expiry",
+        model: "other/small",
+        env: { REVIEW_TOKEN: "kept" },
       }],
-    }), context)).toThrow(/unsupported properties: extra/);
+    }), context)[0];
+    const resumeContext: ValidationContext = {
+      ...context,
+      resumeLookup: (handle) => handle === "dede_handle" ? {
+        handle,
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        attempt: 1,
+        agent: sourceAgent,
+      } : undefined,
+    };
+
+    const [resumed] = validateAndResolve({
+      objective: "Finish only the missing expiry finding",
+      agents: [{ id: "finish", goal: "Return the last finding and stop", resume: "dede_handle" }],
+    }, resumeContext);
+    expect(resumed).toMatchObject({
+      id: "finish",
+      profile: "reviewer",
+      model: "other/small",
+      thinking: "medium",
+      tools: ["read", "grep", "find", "ls"],
+      env: { REVIEW_TOKEN: "kept" },
+      timeoutSeconds: 60,
+      resume: { handle: "dede_handle", sessionId: "11111111-1111-4111-8111-111111111111", attempt: 1 },
+    });
+
+    expect(() => validateAndResolve({
+      objective: "resume",
+      agents: [{ id: "a", goal: "finish", resume: "missing" }],
+    }, resumeContext)).toThrow(/unavailable, expired, or already in use/);
+    expect(() => validateAndResolve({
+      objective: "resume",
+      agents: [{ id: "a", goal: "finish", resume: "dede_handle", model: "test/main" }],
+    }, resumeContext)).toThrow(/cannot override model/);
+    expect(() => validateAndResolve({
+      objective: "resume",
+      agents: [{ id: "a", goal: "finish", resume: "dede_handle", env: { REVIEW_TOKEN: "changed" } }],
+    }, resumeContext)).toThrow(/cannot override env/);
+    expect(() => validateAndResolve({
+      objective: "resume",
+      agents: [{ id: "a", goal: "finish", resume: "dede_handle", timeoutSeconds: 181 }],
+    }, resumeContext)).toThrow(/must not exceed 180/);
+    expect(() => validateAndResolve({
+      objective: "resume",
+      agents: [
+        { id: "a", goal: "finish", resume: "dede_handle" },
+        { id: "b", goal: "new work" },
+      ],
+    }, resumeContext)).toThrow(/resume must run alone/);
   });
 
-  it("accepts up to five agents and rejects a sixth", () => {
-    const five = ["a", "b", "c", "d", "e"].map((id) => ({ id, goal: id }));
-    expect(validateAndResolve(valid({ agents: five }), context)).toHaveLength(5);
-    expect(() => validateAndResolve(valid({ agents: [...five, { id: "f", goal: "f" }] }), context)).toThrow(/one to five/);
-  });
-
-  it("accepts dependency DAGs, including forward references and fan-in", () => {
-    const agents = validateAndResolve(valid({ agents: [
-      { id: "review", goal: "review", dependsOn: ["scan", "tests"] },
-      { id: "scan", goal: "scan" },
-      { id: "tests", goal: "tests", dependsOn: ["scan"] },
-    ] }), context);
-    expect(agents.map((agent) => [agent.id, agent.dependsOn])).toEqual([
-      ["review", ["scan", "tests"]],
-      ["scan", []],
-      ["tests", ["scan"]],
-    ]);
-  });
-
-  it("rejects invalid dependency graphs", () => {
-    expect(() => validateAndResolve(valid({ agents: [
-      { id: "a", goal: "a" },
-      { id: "b", goal: "b", dependsOn: ["missing"] },
-    ] }), context)).toThrow(/unknown agent/);
-    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "a", dependsOn: ["a"] }] }), context)).toThrow(/itself/);
-    expect(() => validateAndResolve(valid({ agents: [
-      { id: "a", goal: "a" },
-      { id: "b", goal: "b", dependsOn: ["a", "a"] },
-    ] }), context)).toThrow(/duplicates/);
-    expect(() => validateAndResolve(valid({ agents: [
-      { id: "a", goal: "a", dependsOn: ["b"] },
-      { id: "b", goal: "b", dependsOn: ["c"] },
-      { id: "c", goal: "c", dependsOn: ["a"] },
-    ] }), context)).toThrow(/cycle/);
+  it("accepts up to three agents and rejects a fourth", () => {
+    const three = ["a", "b", "c"].map((id) => ({ id, goal: id }));
+    expect(validateAndResolve(valid({ agents: three }), context)).toHaveLength(3);
+    expect(() => validateAndResolve(valid({ agents: [...three, { id: "d", goal: "d" }] }), context)).toThrow(/one to 3/);
   });
 
   it("treats bash, edit, and write as mutation-capable and rejects parallel mutation", () => {
@@ -196,19 +239,20 @@ describe("semantic validation", () => {
     ] }), context)).toThrow(/must run alone/);
   });
 
-  it("checks UTF-8 byte limits", () => {
-    expect(() => validateAndResolve(valid({ objective: "🦊".repeat(3073) }), context)).toThrow(/UTF-8 bytes/);
-    expect(() => validateAndResolve(valid({ sharedContext: "界".repeat(16385) }), context)).toThrow(/UTF-8 bytes/);
+  it("checks reduced UTF-8 byte limits", () => {
+    expect(() => validateAndResolve(valid({ objective: "🦊".repeat(1025) }), context)).toThrow(/UTF-8 bytes/);
+    expect(() => validateAndResolve(valid({ sharedContext: "界".repeat(5462) }), context)).toThrow(/UTF-8 bytes/);
+    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "🦊".repeat(1025) }] }), context)).toThrow(/UTF-8 bytes/);
   });
 
-  it("rejects recursion and extension-only providers", () => {
+  it("rejects recursion and gives an actionable extension-provider error", () => {
     process.env.PI_DEDE_DEPTH = "1";
     expect(() => validateAndResolve(valid(), context)).toThrow(/Recursive/);
     delete process.env.PI_DEDE_DEPTH;
     expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", model: "other/small" }] }), {
       ...context,
       extensionProviderIds: ["other"],
-    })).toThrow(/registered by an extension/);
+    })).toThrow(/configure profiles\.custom\.model.*test\/main/);
   });
 });
 

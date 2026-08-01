@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { PROFILES, THINKING_LEVELS, type DedeProfile, type ProfileDefaults, type ThinkingLevel } from "./types.ts";
+import { mergeChildEnv, validateChildEnv } from "./env.ts";
+import { PROFILES, THINKING_LEVELS, type ProfileDefaults, type ThinkingLevel } from "./types.ts";
 
 const CONFIG_FILE_NAME = "pi-dede.json";
 const MAX_CONFIG_BYTES = 64 * 1024;
@@ -28,8 +29,8 @@ function parseConfig(content: string, path: string): DedeConfigFile {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
-  } catch (error) {
-    throw new Error(`Could not parse ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    throw new Error(`Could not parse ${path}: invalid JSON`);
   }
   if (!isRecord(parsed)) throw new Error(`${path} must contain a JSON object`);
   assertKnownKeys(parsed, ["profiles"], path);
@@ -42,7 +43,7 @@ function parseConfig(content: string, path: string): DedeConfigFile {
     const value = parsed.profiles[profile];
     if (value === undefined) continue;
     if (!isRecord(value)) throw new Error(`${path}.profiles.${profile} must be an object`);
-    assertKnownKeys(value, ["model", "thinking"], `${path}.profiles.${profile}`);
+    assertKnownKeys(value, ["model", "thinking", "env"], `${path}.profiles.${profile}`);
 
     if (value.model !== undefined && (typeof value.model !== "string" || value.model.trim().length === 0)) {
       throw new Error(`${path}.profiles.${profile}.model must be a non-empty string`);
@@ -51,9 +52,13 @@ function parseConfig(content: string, path: string): DedeConfigFile {
       throw new Error(`${path}.profiles.${profile}.thinking must be one of: ${THINKING_LEVELS.join(", ")}`);
     }
 
+    const env = value.env === undefined
+      ? undefined
+      : validateChildEnv(value.env, `${path}.profiles.${profile}.env`);
     profiles[profile] = {
       ...(typeof value.model === "string" ? { model: value.model.trim() } : {}),
       ...(value.thinking !== undefined ? { thinking: value.thinking as ThinkingLevel } : {}),
+      ...(env !== undefined ? { env } : {}),
     };
   }
   return { profiles };
@@ -71,8 +76,15 @@ async function readConfig(path: string): Promise<DedeConfigFile> {
 function mergeProfileDefaults(globalDefaults: ProfileDefaults = {}, projectDefaults: ProfileDefaults = {}): ProfileDefaults {
   const merged: ProfileDefaults = {};
   for (const profile of PROFILES) {
-    const value = { ...globalDefaults[profile], ...projectDefaults[profile] };
-    if (value.model !== undefined || value.thinking !== undefined) merged[profile] = value;
+    const globalValue = globalDefaults[profile];
+    const projectValue = projectDefaults[profile];
+    const env = mergeChildEnv([globalValue?.env, projectValue?.env]);
+    const value = {
+      ...globalValue,
+      ...projectValue,
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+    };
+    if (value.model !== undefined || value.thinking !== undefined || value.env !== undefined) merged[profile] = value;
   }
   return merged;
 }

@@ -42,6 +42,20 @@ describe("PiJsonCollector", () => {
     expect(result.usage.cost.total).toBeCloseTo(0.33);
   });
 
+  it("does not emit progress for answer deltas or tool update payloads", () => {
+    const progress: string[] = [];
+    const collector = new PiJsonCollector((text) => progress.push(text));
+    collector.push(`${JSON.stringify({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "partial secret answer" },
+    })}\n`);
+    collector.push(`${JSON.stringify({ type: "tool_execution_update", toolName: "read", partialResult: "large output" })}\n`);
+    const result = collector.end();
+    expect(progress).toEqual([]);
+    expect(result.finalText).toContain("partial secret answer");
+    expect(result.finalText).toContain("Partial response interrupted");
+  });
+
   it("deduplicates repeated finalized assistant events", () => {
     const collector = new PiJsonCollector();
     const line = JSON.stringify({ type: "message_end", message: assistant });

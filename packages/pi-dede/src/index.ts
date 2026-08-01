@@ -1,36 +1,35 @@
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadProfileDefaults } from "./config.ts";
-import { buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
+import { buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
 import { aggregateUsages } from "./json-events.ts";
 import { cloneDetails, deriveStatus, formatModelContent, progressContent, zeroUsage } from "./output.ts";
 import { renderDedeCall, renderDedeResult } from "./render.ts";
+import { ChildResumeStore, type ResumeLease } from "./resume.ts";
 import { ArtifactManager, ChildProcessManager, createSecureRunDirectory, removeRunDirectory, runChild, writeSecurePrompt } from "./runner.ts";
-import { DedeDelegateSchema, type DedeDelegateInput, validateAndResolve } from "./schema.ts";
+import { DedeDelegateSchema, type DedeDelegateInput, MAX_AGENTS_PER_RUN, validateAndResolve } from "./schema.ts";
 import { abortError, FifoSemaphore } from "./scheduler.ts";
 import type { DedeChildResult, DedeToolDetails, DetailedUsage, ResolvedAgent } from "./types.ts";
 
-const MAX_ACTIVE_CHILDREN = 5;
+const PROGRESS_THROTTLE_MS = 200;
+const PROGRESS_HEARTBEAT_MS = 1000;
 
 function queuedResult(agent: ResolvedAgent): DedeChildResult {
   return {
     id: agent.id,
     profile: agent.profile,
     goal: agent.goal,
-    dependsOn: [...agent.dependsOn],
     status: "queued",
     model: agent.model,
     thinking: agent.thinking,
     tools: [...agent.tools],
+    timeoutSeconds: agent.timeoutSeconds,
+    ...(agent.resume ? { resumedFrom: agent.resume.handle } : {}),
     finalText: "",
     durationMs: 0,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 },
-    activity: [{
-      type: "status",
-      text: agent.dependsOn.length > 0 ? `waiting for ${agent.dependsOn.join(", ")}` : "queued",
-    }],
+    activity: [{ type: "status", text: "queued" }],
   };
 }
 
@@ -47,13 +46,14 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   const uiContexts = new Map<ExtensionContext, number>();
   const runDirectories = new Set<string>();
   let artifacts: ArtifactManager | undefined;
+  let resumeStore: ChildResumeStore | undefined;
   let shuttingDown = false;
 
   const updateFooter = (active: number, queued: number) => {
-    const status = active || queued ? `đệ ${active}/${MAX_ACTIVE_CHILDREN}${queued ? ` (+${queued})` : ""}` : undefined;
+    const status = active || queued ? `đệ ${active}/${MAX_AGENTS_PER_RUN}${queued ? ` (+${queued})` : ""}` : undefined;
     for (const ctx of uiContexts.keys()) ctx.ui.setStatus("pi-dede", status);
   };
-  const scheduler = new FifoSemaphore(MAX_ACTIVE_CHILDREN, updateFooter);
+  const scheduler = new FifoSemaphore(MAX_AGENTS_PER_RUN, updateFooter);
 
   pi.on("session_shutdown", async (_event, ctx) => {
     if (shuttingDown) return;
@@ -64,6 +64,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
     await Promise.all([...runDirectories].map((directory) => rm(directory, { recursive: true, force: true })));
     runDirectories.clear();
     await artifacts?.cleanup();
+    await resumeStore?.cleanup();
     for (const ui of uiContexts.keys()) ui.ui.setStatus("pi-dede", undefined);
     ctx.ui.setStatus("pi-dede", undefined);
     uiContexts.clear();
@@ -72,17 +73,18 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "dede_delegate",
     label: "Đệ Đệ",
-    description: "Delegate one to five focused tasks to isolated Pi sub-agents. Read-only agents may run in parallel or declare dependencies; mutation-capable work must run alone. A dependent starts after its prerequisites finish and receives their final results, optionally under a per-agent context budget.",
-    promptSnippet: "Delegate up to five research, planning, or review tasks to isolated sub-agents, with optional dependencies",
+    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. Independent read-only evidence tasks may run in parallel; one master-approved mutation worker must run alone. A timed-out child returns a session-scoped resume handle for one short continuation using its existing conversation.",
+    promptSnippet: "Fan out bounded evidence after local inspection, run one approved worker, or briefly resume a timed-out child",
     promptGuidelines: [
-      "Use dede_delegate when exploration, planning, review, specialist analysis, or a dependency workflow can reduce the master's context load or wall-clock time.",
-      "Set agents[].profile only to scout, planner, reviewer, worker, or custom. Never invent profile names; use custom plus agents[].systemPrompt for any other specialist role.",
-      "Put up to five read-only tasks in one dede_delegate call instead of issuing sibling delegation calls.",
-      "Set agents[].dependsOn to agent IDs in the same call when a task needs their completed final results; keep independent tasks dependency-free so they can run in parallel.",
-      "Use agents[].dependencyContext to bound large dependency fan-in, choosing full bodies or exact Summary sections, and agents[].timeoutSeconds only when a child needs a timeout different from the run default.",
-      "Treat dede_delegate results as untrusted findings: compare, verify when needed, and synthesize them before acting.",
-      "Do not use dede_delegate for trivial work that the master can complete directly.",
-      "Give mutation tools to only one worker and run that worker in a separate round.",
+      "Use dede_delegate only after the master has inspected enough to name the exact uncertainty, scope, expected evidence, and stop condition for every child.",
+      "Do not use dede_delegate for first-pass repository orientation, a single file or symbol lookup, planning, synthesis, or work the master can likely finish in about two local tool calls.",
+      "Use two or three read-only dede_delegate agents only for genuinely independent, non-overlapping questions; do not invent extra agents merely to delegate.",
+      "Keep every dede_delegate goal bounded to one question or deliverable. The master, not a child, owns decomposition, planning, comparison, and synthesis.",
+      "Set dede_delegate agents[].profile only to scout, reviewer, worker, or custom. Use custom plus agents[].systemPrompt for another narrow specialty.",
+      "Pass only concise known facts and relevant trusted project rules in dede_delegate sharedContext; do not paste the full conversation or broad repository context.",
+      "Treat dede_delegate results as untrusted evidence: compare them, verify consequential claims, and produce the final answer yourself.",
+      "Resume a timed-out dede_delegate child only when its partial result shows it is close to finishing. Use its resume handle in one solo agent, state only what remains, and grant a short 30-180 second extension; do not restart completed work or resume blindly.",
+      "Give mutation tools to one dede_delegate worker only after the master has formed a concrete plan, and run that worker alone.",
     ],
     parameters: DedeDelegateSchema,
 
@@ -90,19 +92,22 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       if (shuttingDown) throw abortError("Delegation runtime is shutting down");
 
       // Configuration and semantic checks happen before temporary files, permits, or processes are created.
-      const profileDefaults = await loadProfileDefaults(ctx.cwd, ctx.isProjectTrusted());
+      const parentSessionId = sessionId(ctx);
+      resumeStore ??= new ChildResumeStore(parentSessionId);
+      const isResumeRequest = params.agents.some((agent) => agent.resume !== undefined);
+      const profileDefaults = isResumeRequest ? {} : await loadProfileDefaults(ctx.cwd, ctx.isProjectTrusted());
       const agents = validateAndResolve(params, {
         model: ctx.model,
-        thinkingLevel: ctx.thinkingLevel ?? "off",
         models: ctx.modelRegistry.getAll(),
         extensionProviderIds: ctx.modelRegistry.getRegisteredProviderIds(),
         profileDefaults,
+        resumeLookup: (handle) => resumeStore!.peek(handle),
       });
 
       const runId = randomUUID();
       const startedAt = Date.now();
       const details: DedeToolDetails = {
-        version: 1,
+        version: 2,
         runId,
         status: "succeeded",
         startedAt,
@@ -110,7 +115,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         results: agents.map(queuedResult),
       };
       const detailedUsages: DetailedUsage[] = agents.map(() => zeroUsage());
-      const parentSessionId = sessionId(ctx);
+      const runningSince = new Map<number, number>();
       artifacts ??= new ArtifactManager(parentSessionId);
       uiContexts.set(ctx, (uiContexts.get(ctx) ?? 0) + 1);
       updateFooter(scheduler.active, scheduler.queued);
@@ -118,16 +123,48 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       const combinedSignal = signal
         ? AbortSignal.any([signal, shutdownController.signal])
         : shutdownController.signal;
-      const emit = () => {
+      let lastEmitAt = 0;
+      let pendingEmit: ReturnType<typeof setTimeout> | undefined;
+
+      const publish = () => {
+        pendingEmit = undefined;
         if (combinedSignal.aborted) return;
-        details.durationMs = Date.now() - startedAt;
+        const now = Date.now();
+        details.durationMs = now - startedAt;
+        for (const [index, childStartedAt] of runningSince) {
+          if (details.results[index]?.status === "running") {
+            details.results[index] = { ...details.results[index], durationMs: now - childStartedAt };
+          }
+        }
+        lastEmitAt = now;
         onUpdate?.({
           content: [{ type: "text", text: progressContent(details) }],
           details: cloneDetails(details),
         });
       };
 
+      const emit = () => {
+        if (!onUpdate || combinedSignal.aborted) return;
+        const delay = PROGRESS_THROTTLE_MS - (Date.now() - lastEmitAt);
+        if (delay <= 0) {
+          if (pendingEmit) clearTimeout(pendingEmit);
+          publish();
+          return;
+        }
+        if (!pendingEmit) {
+          pendingEmit = setTimeout(publish, delay);
+          pendingEmit.unref?.();
+        }
+      };
+
+      const heartbeat = setInterval(() => {
+        if (runningSince.size > 0) emit();
+      }, PROGRESS_HEARTBEAT_MS);
+      heartbeat.unref?.();
+
       let runDirectory: string | undefined;
+      let claimedResume: ResumeLease | undefined;
+      let claimedResumeHandled = false;
       try {
         runDirectory = await createSecureRunDirectory(runId);
         runDirectories.add(runDirectory);
@@ -135,34 +172,32 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         const systemPromptPaths = await Promise.all(agents.map((agent) =>
           writeSecurePrompt(runDirectory!, `${agent.id}-system.md`, buildSystemPrompt(agent))
         ));
-        const completions = new Map<string, {
-          promise: Promise<DedeChildResult>;
-          resolve: (result: DedeChildResult) => void;
-        }>();
-        for (const agent of agents) {
-          let resolve!: (result: DedeChildResult) => void;
-          const promise = new Promise<DedeChildResult>((done) => { resolve = done; });
-          completions.set(agent.id, { promise, resolve });
-        }
+
+        if (agents[0]?.resume) claimedResume = resumeStore!.claim(agents[0].resume.handle);
 
         emit();
         await Promise.all(agents.map(async (agent, index) => {
           let permit;
+          let lease: ResumeLease | undefined;
+          let leaseHandled = false;
           try {
-            const dependencyResults = await Promise.all(agent.dependsOn.map((id) => completions.get(id)!.promise));
-            if (combinedSignal.aborted) throw abortError();
+            lease = agent.resume ? claimedResume! : await resumeStore!.allocate(agent, ctx.cwd);
             const taskPath = await writeSecurePrompt(
               runDirectory!,
               `${agent.id}-task.md`,
-              buildTaskPrompt(params.objective, agent.goal, params.sharedContext, dependencyResults, agent.dependencyContext),
+              agent.resume
+                ? buildResumeTaskPrompt(params.objective, agent.goal, params.sharedContext)
+                : buildTaskPrompt(params.objective, agent.goal, params.sharedContext),
             );
 
             permit = await scheduler.acquire(combinedSignal);
             if (combinedSignal.aborted) throw abortError();
+            runningSince.set(index, Date.now());
             details.results[index] = {
               ...details.results[index],
               status: "running",
-              activity: [{ type: "status", text: "running" }],
+              durationMs: 0,
+              activity: [{ type: "status", text: agent.resume ? `resuming attempt ${agent.resume.attempt}` : "running" }],
             };
             emit();
 
@@ -171,6 +206,10 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               cwd: ctx.cwd,
               systemPromptPath: systemPromptPaths[index],
               taskPath,
+              sessionDirectory: lease.directory,
+              sessionPath: lease.sessionPath,
+              childSessionId: lease.sessionId,
+              isResume: agent.resume !== undefined,
               runId,
               parentSessionId,
               timeoutSeconds: agent.timeoutSeconds,
@@ -178,10 +217,12 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               manager: processManager,
               artifacts: artifacts!,
               onProgress: (text, protocol) => {
+                const childStartedAt = runningSince.get(index) ?? Date.now();
                 details.results[index] = {
                   ...details.results[index],
                   model: protocol.model ?? details.results[index].model,
                   stopReason: protocol.stopReason,
+                  durationMs: Date.now() - childStartedAt,
                   usage: {
                     input: protocol.usage.input,
                     output: protocol.usage.output,
@@ -198,14 +239,41 @@ export default function dedeExtension(pi: ExtensionAPI): void {
                 emit();
               },
             });
+
+            if (child.result.status === "timed_out") {
+              resumeStore!.markTimedOut(lease.handle);
+              child.result.resumeHandle = lease.handle;
+              child.result.activity = [
+                ...child.result.activity,
+                { type: "status" as const, text: `short resume available: ${lease.handle}` },
+              ].slice(-100);
+            } else {
+              await resumeStore!.discard(lease.handle);
+            }
+            leaseHandled = true;
+            if (agent.resume) claimedResumeHandled = true;
             details.results[index] = child.result;
             detailedUsages[index] = child.detailedUsage;
           } catch (error) {
+            const childStartedAt = runningSince.get(index);
+            const durationMs = childStartedAt === undefined ? 0 : Date.now() - childStartedAt;
+            let preservedResumeHandle: string | undefined;
+            if (lease && !leaseHandled) {
+              if (agent.resume) {
+                resumeStore!.release(lease.handle);
+                preservedResumeHandle = lease.handle;
+                claimedResumeHandled = true;
+              } else {
+                await resumeStore!.discard(lease.handle);
+              }
+              leaseHandled = true;
+            }
             if (combinedSignal.aborted) {
               details.results[index] = {
                 ...details.results[index],
                 status: "cancelled",
-                durationMs: Date.now() - startedAt,
+                durationMs,
+                ...(preservedResumeHandle ? { resumeHandle: preservedResumeHandle } : {}),
                 errorMessage: "Delegation cancelled",
                 activity: [...details.results[index].activity, { type: "status" as const, text: "cancelled" }].slice(-100),
               };
@@ -214,14 +282,15 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               details.results[index] = {
                 ...details.results[index],
                 status: "failed",
-                durationMs: Date.now() - startedAt,
+                durationMs,
+                ...(preservedResumeHandle ? { resumeHandle: preservedResumeHandle } : {}),
                 errorMessage: message,
                 activity: [...details.results[index].activity, { type: "status" as const, text: "internal child error" }].slice(-100),
               };
             }
           } finally {
+            runningSince.delete(index);
             permit?.release();
-            completions.get(agent.id)!.resolve(details.results[index]);
             emit();
           }
         }));
@@ -236,6 +305,9 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           usage: aggregateUsages(detailedUsages),
         };
       } finally {
+        clearInterval(heartbeat);
+        if (pendingEmit) clearTimeout(pendingEmit);
+        if (claimedResume && !claimedResumeHandled) resumeStore!.release(claimedResume.handle);
         if (runDirectory) {
           runDirectories.delete(runDirectory);
           await removeRunDirectory(runDirectory);

@@ -1,18 +1,44 @@
 # Đệ Đệ (`pi-dede`)
 
-A Pi extension that delegates focused work to up to five isolated, ephemeral Pi sub-agents.
+A deliberately narrow Pi extension for short, isolated delegation. It helps a master fan out bounded evidence questions after local inspection, or hand one approved implementation to a solo worker.
+
+`pi-dede` is synchronous: the master waits for the children. Its defaults therefore favor fewer agents, low reasoning effort, small outputs, and short deadlines.
+
+## When to use it
+
+Use `dede_delegate` only when the master already knows enough to define exact scope.
+
+Good uses:
+
+- two or three independent, non-overlapping repository questions;
+- one focused risk review of named files or behavior;
+- one mutation-capable worker executing a concrete master-approved plan.
+
+Do not use it for:
+
+- first-pass repository orientation;
+- a single file or symbol lookup;
+- planning or synthesis;
+- work likely finishable in roughly two local tool calls;
+- broad tasks such as “review the project” or “implement the feature”.
+
+The master owns decomposition, comparison, verification, planning, and the final answer.
 
 ## Features
 
 - One LLM-callable tool: `dede_delegate`
-- Up to five concurrent read-only agents
-- Dependency workflows within one call (`dependsOn`)
-- A single explicitly authorized coding worker
-- Per-agent profile, goal, model, thinking level, timeout, dependency-context budget, and built-in tool allowlist
-- Child resource discovery disabled (extensions, skills, templates, themes, context files)
-- Global five-process FIFO limit across concurrent tool calls
-- Streaming TUI progress, nested usage accounting, timeout and process-tree cancellation
-- Bounded output with session-scoped artifacts for exceptionally large responses
+- One to three isolated, ephemeral children per call
+- Global three-process FIFO limit across concurrent calls
+- Parallel read-only evidence collection
+- One explicitly authorized coding worker per mutation run
+- Built-in `scout`, `reviewer`, `worker`, and `custom` profiles
+- 120-second default and 600-second maximum child deadline
+- Compact 400-word response contract
+- 4 KiB model-visible limit per child and 12 KiB aggregate limit
+- Session-scoped continuation handles for timed-out children
+- Throttled TUI progress with elapsed/deadline display
+- Nested usage accounting and process-tree cancellation
+- Child resource discovery disabled
 
 ## Install
 
@@ -26,80 +52,160 @@ For development:
 
 ```sh
 npm install
-npm test
+npm run check
 pi -e ./src/index.ts
 ```
 
-## Tool example
+## Evidence fan-out
 
 ```json
 {
-  "objective": "Assess the authentication refactor",
-  "sharedContext": "Focus on src/auth. Project rules must be passed explicitly here.",
+  "objective": "Decide whether the refresh-token change is safe to implement",
+  "sharedContext": "Scope: src/auth/token.ts and tests/auth/token.test.ts. Preserve the public TokenStore interface.",
   "agents": [
-    { "id": "scout", "profile": "scout", "goal": "Map the auth flow" },
-    { "id": "test-scout", "profile": "scout", "goal": "Assess existing test coverage" },
     {
-      "id": "planner",
-      "profile": "planner",
-      "goal": "Turn the combined findings into an implementation plan",
-      "dependsOn": ["scout", "test-scout"],
-      "timeoutSeconds": 900,
-      "dependencyContext": { "mode": "summary", "maxBytes": 32768 }
+      "id": "flow",
+      "profile": "scout",
+      "goal": "Trace refresh-token creation and validation only in the named files. Return the exact symbols and invariants needed by a change; stop after the flow is established."
+    },
+    {
+      "id": "risk",
+      "profile": "reviewer",
+      "goal": "Review replay and expiry behavior only in the named files. Return actionable failure modes with line evidence; stop after at most five findings."
     }
   ]
 }
 ```
 
-Agents without dependencies start as soon as a global slot is available. `dependsOn` names other agent IDs in the same call; forward references are allowed. A dependent waits for every direct dependency to finish, then receives each dependency's status, error (if any), and final text as explicitly untrusted task context. Cycles, unknown IDs, self-dependencies, and duplicate dependencies are rejected. Returned results always preserve request order.
+Independent children start as global slots become available. Results preserve request order.
 
-A dependent can set `dependencyContext` to bound all direct dependency bodies together (`maxBytes`: 4096–262144). `mode: "full"` fairly shares the budget across full bodies. `mode: "summary"` selects an exact case-insensitive `## Summary` section through the next H2, ignoring heading-like lines inside fenced code; when absent, it uses a clearly labeled result-head fallback. Every dependency remains represented in declared order, status/error/untrusted wrappers stay intact, truncation preserves UTF-8 boundaries, and each body discloses kept/original bytes. Omitting `dependencyContext` preserves the original unbudgeted prompt format.
+## Solo worker
 
-The top-level `timeoutSeconds` remains a run default from 1800–3600 seconds (default 1800). An agent may override it with `agents[].timeoutSeconds` from 30–3600 seconds; precedence is agent, then top-level, then 1800.
+Use a separate call after the master has synthesized evidence and approved a concrete plan:
 
-Read-only presets contain only `read`, `grep`, `find`, and `ls`. `bash` is always treated as mutation-capable. Any agent with `bash`, `edit`, or `write` must run alone, so multi-agent dependency workflows are read-only. A common flow is `scout` agents feeding a dependent `planner`, followed by a separate solo `worker` delegation after the master approves the plan.
+```json
+{
+  "objective": "Apply the approved refresh-token validation change",
+  "sharedContext": "Exact plan, relevant repository rules, and invariants go here.",
+  "agents": [
+    {
+      "id": "worker",
+      "profile": "worker",
+      "goal": "Change only src/auth/token.ts and its focused tests according to the supplied plan. Run the named test command and stop."
+    }
+  ],
+  "timeoutSeconds": 300
+}
+```
 
-Profiles:
+Any child with `bash`, `edit`, or `write` is mutation-capable and must run alone.
 
-| Profile | Default tools | Focus |
-|---|---|---|
-| `scout` | read-only | Reconnaissance and exact evidence |
-| `planner` | read-only | Implementation-ready plans with affected files, ordered steps, and verification |
-| `reviewer` | read-only | Severity-ranked review findings |
-| `worker` | coding | Focused implementation and verification |
-| `custom` | read-only | Caller-defined specialist |
+## Short continuation after timeout
 
-Tool presets are `read-only`, `coding`, `none`, and `custom`. With `custom`, supply an explicit `tools` array (which may be empty).
+Each child runs in a private temporary Pi session. When a child times out, its result contains a `resumeHandle` and model-visible instructions. The master should resume only when the partial result shows the child is close to useful completion—not automatically after every timeout.
 
-## Profile defaults
+```json
+{
+  "objective": "Finish the missing refresh-token finding from existing evidence",
+  "agents": [
+    {
+      "id": "risk-finish",
+      "resume": "dede_00000000-0000-4000-8000-000000000000",
+      "goal": "Return only the remaining replay-risk finding and its exact line evidence, then stop.",
+      "timeoutSeconds": 60
+    }
+  ]
+}
+```
 
-Set persistent model and thinking defaults in either of these optional files:
+Resume rules:
+
+- the resume must be the only agent in its call;
+- it reuses the exact previous child conversation, profile, system instructions, model, thinking, environment overrides, and tools;
+- only `id`, `goal`, and `timeoutSeconds` may change;
+- the extension defaults to 60 seconds and allows 30–180 seconds;
+- the continuation prompt tells the child to reuse existing progress instead of restarting;
+- a second timeout returns the same handle for another deliberate short extension;
+- success or a terminal non-timeout failure consumes the handle and deletes that private child session;
+- handles expire on master session shutdown, reload, replacement, or fork.
+
+Private child sessions use mode-`0600` files under a mode-`0700` temporary directory, do not appear in the user's normal Pi session list, and are removed with the master session runtime.
+
+## Profiles and defaults
+
+| Profile | Default tools | Default thinking | Purpose |
+|---|---|---:|---|
+| `scout` | read-only | `low` | Answer one bounded repository question |
+| `reviewer` | read-only | `medium` | Review one named behavior, diff, or risk area |
+| `worker` | coding | `medium` | Execute one concrete approved change |
+| `custom` | read-only | `low` | Caller-defined narrow specialty |
+
+Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial timeouts range from 30 to 600 seconds and default to 120 seconds; resumed children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second continuation budget.
+
+Persistent profile model, thinking, and environment overrides may be placed in:
 
 | Location | Scope |
 |---|---|
-| `~/.pi/agent/pi-dede.json` | Global, all projects |
+| `~/.pi/agent/pi-dede.json` | Global |
 | `.pi/pi-dede.json` | Current trusted project |
 
 ```json
 {
   "profiles": {
-    "scout": { "model": "anthropic/claude-haiku-4-5", "thinking": "low" },
-    "planner": { "model": "anthropic/claude-sonnet-4-5", "thinking": "high" },
-    "reviewer": { "model": "anthropic/claude-sonnet-4-5", "thinking": "high" },
-    "worker": { "model": "openai-codex/gpt-5.3-codex", "thinking": "xhigh" },
-    "custom": { "thinking": "medium" }
+    "scout": {
+      "model": "anthropic/claude-haiku-4-5",
+      "thinking": "low",
+      "env": { "CHILD_MODE": "inspect" }
+    },
+    "reviewer": { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium" },
+    "worker": { "model": "openai-codex/gpt-5.3-codex", "thinking": "medium" },
+    "custom": { "thinking": "low" }
   }
 }
 ```
 
-Project values override global values field by field. Effective precedence is: explicit `agents[].model`/`agents[].thinking`, project profile default, global profile default, then the master's current model/thinking. Configuration is read on every delegation, so manual edits apply without `/reload`. Project configuration is ignored unless Pi trusts the project.
+Project values override global model/thinking fields and merge environment values by variable name. Per-agent values then override configured environment values. The complete child environment precedence is inherited master process environment, global profile environment, trusted-project profile environment, per-agent environment, then pi-dede's internal control variables.
 
-Model values use the same exact, glob, or partial matching accepted by the tool's `model` field. Models supplied only by provider extensions remain unsupported in isolated children.
+Configuration is read on every delegation. Project configuration is ignored unless Pi trusts the project. Environment names must be portable identifiers; session/delegation variables and process-startup controls such as `PATH`, `NODE_OPTIONS`, loader variables, and `BASH_ENV` cannot be overridden. The final merged override map may contain at most 64 variables and 16 KiB total, with an 8 KiB limit per value.
+
+`agents[].env` values are stored in the master session transcript. Values in `pi-dede.json` are not added to prompts or results, but they remain plaintext on disk; protect the config file appropriately.
+
+### Extension-provided master models
+
+Children run with extensions disabled. If the master's current provider exists only through an extension, configure a built-in child-compatible model in `pi-dede.json` or set `agents[].model`. Validation errors include bounded catalog candidates to make this repair actionable.
+
+## Limits
+
+| Field/output | Limit |
+|---|---:|
+| `objective` | 4 KiB UTF-8 |
+| `sharedContext` | 16 KiB UTF-8 |
+| `agent.goal` | 4 KiB UTF-8 |
+| `agent.systemPrompt` | 8 KiB UTF-8 |
+| Final merged environment overrides | 64 variables / 16 KiB UTF-8 |
+| Environment value | 8 KiB UTF-8 |
+| Agents per run | 1–3 |
+| Initial child timeout | 30–600 seconds; default 120 |
+| Resumed child extension | 30–180 seconds; default 60 |
+| Child response instruction | 400 words |
+| Model-visible child result | 4 KiB / 160 lines |
+| Aggregate model-visible result | 12 KiB / 500 lines |
+| Structured child text | 32 KiB; larger text goes to a session artifact |
 
 ## Security and isolation
 
-Children run as separate `pi --mode json --print --no-session` processes with extension and project-resource discovery disabled. Prompts are mode-`0600` temporary files, not command-line text. Child processes still have the user's OS permissions: tool allowlists are capability reduction, **not an OS sandbox**. A read-only child can read any path the user can read.
+Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled. Each uses an exact session ID inside pi-dede's private temporary session directory so timed-out work can be continued briefly. Prompts are mode-`0600` temporary files rather than command-line text.
 
-`AGENTS.md`, skills, and other project instructions are not inherited. Include relevant trusted rules in `sharedContext`. Models supplied only by provider extensions are unsupported because extensions are disabled in children.
+Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. `AGENTS.md`, skills, and project instructions are not inherited, so pass only the relevant trusted rules in `sharedContext`.
 
-See [SPEC.md](./SPEC.md) for the complete contract and limitations.
+See [SPEC.md](./SPEC.md) for the complete v0.2 contract.
+
+## v0.2 breaking changes
+
+- Removed the `planner` profile.
+- Removed in-run `dependsOn` workflows and dependency-result forwarding.
+- Reduced the per-run and global process ceiling from five to three.
+- Reduced default/maximum timeouts and context/output budgets.
+- Child thinking now uses bounded profile defaults instead of inheriting the master's reasoning level.
+- Structured result details use version `2`.
+- Timed-out results can expose a session-scoped handle for a deliberate 30–180 second continuation.

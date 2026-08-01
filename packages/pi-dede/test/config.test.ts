@@ -29,30 +29,36 @@ describe("profile default configuration", () => {
   it("loads global defaults and merges trusted project overrides by field", async () => {
     const { cwd, globalPath, projectPath } = await setup();
     await writeFile(globalPath, JSON.stringify({ profiles: {
-      scout: { model: " global/scout ", thinking: "low" },
-      planner: { thinking: "medium" },
+      scout: { model: " global/scout ", thinking: "low", env: { GLOBAL_ONLY: "yes", SHARED: "global" } },
+      custom: { thinking: "minimal" },
       reviewer: { model: "global/reviewer", thinking: "medium" },
     } }));
     await writeFile(projectPath, JSON.stringify({ profiles: {
-      scout: { thinking: "high" },
-      planner: { model: "project/planner" },
+      scout: { thinking: "high", env: { PROJECT_ONLY: "yes", SHARED: "project" } },
+      custom: { model: "project/custom" },
       worker: { model: "project/worker" },
     } }));
 
     await expect(loadProfileDefaults(cwd, true)).resolves.toEqual({
-      scout: { model: "global/scout", thinking: "high" },
-      planner: { model: "project/planner", thinking: "medium" },
+      scout: {
+        model: "global/scout",
+        thinking: "high",
+        env: { GLOBAL_ONLY: "yes", SHARED: "project", PROJECT_ONLY: "yes" },
+      },
       reviewer: { model: "global/reviewer", thinking: "medium" },
       worker: { model: "project/worker" },
+      custom: { model: "project/custom", thinking: "minimal" },
     });
   });
 
   it("ignores project configuration when the project is not trusted", async () => {
     const { cwd, globalPath, projectPath } = await setup();
-    await writeFile(globalPath, JSON.stringify({ profiles: { scout: { thinking: "low" } } }));
-    await writeFile(projectPath, JSON.stringify({ profiles: { scout: { thinking: "max" } } }));
+    await writeFile(globalPath, JSON.stringify({ profiles: { scout: { thinking: "low", env: { SOURCE: "global" } } } }));
+    await writeFile(projectPath, JSON.stringify({ profiles: { scout: { thinking: "max", env: { SOURCE: "project" } } } }));
 
-    await expect(loadProfileDefaults(cwd, false)).resolves.toEqual({ scout: { thinking: "low" } });
+    await expect(loadProfileDefaults(cwd, false)).resolves.toEqual({
+      scout: { thinking: "low", env: { SOURCE: "global" } },
+    });
   });
 
   it("returns no defaults when configuration files do not exist", async () => {
@@ -67,5 +73,29 @@ describe("profile default configuration", () => {
 
     await writeFile(globalPath, JSON.stringify({ profiles: { architect: { thinking: "low" } } }));
     await expect(loadProfileDefaults(cwd, false)).rejects.toThrow(/unknown field: architect/);
+  });
+
+  it("validates configured environment maps without exposing values", async () => {
+    const { cwd, globalPath } = await setup();
+    await writeFile(globalPath, JSON.stringify({ profiles: { scout: { env: { TOKEN: 42 } } } }));
+    await expect(loadProfileDefaults(cwd, false)).rejects.toThrow(/\.env\.TOKEN must be a string/);
+
+    await writeFile(globalPath, JSON.stringify({ profiles: { scout: { env: { NODE_OPTIONS: "secret-sentinel" } } } }));
+    try {
+      await loadProfileDefaults(cwd, false);
+      throw new Error("expected protected environment rejection");
+    } catch (error) {
+      expect(String(error)).toContain("protected variable: NODE_OPTIONS");
+      expect(String(error)).not.toContain("secret-sentinel");
+    }
+
+    await writeFile(globalPath, "{\"profiles\":{\"scout\":{\"env\":{\"TOKEN\":secret-sentinel}}}}");
+    try {
+      await loadProfileDefaults(cwd, false);
+      throw new Error("expected malformed JSON rejection");
+    } catch (error) {
+      expect(String(error)).toContain("invalid JSON");
+      expect(String(error)).not.toContain("secret-sentinel");
+    }
   });
 });

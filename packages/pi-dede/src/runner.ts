@@ -7,7 +7,7 @@ import { childUsage, PiJsonCollector, type CollectedProtocol } from "./json-even
 import type { DedeChildResult, ResolvedAgent } from "./types.ts";
 
 const STDERR_CAP = 64 * 1024;
-const DETAILS_TEXT_CAP = 256 * 1024;
+const DETAILS_TEXT_CAP = 32 * 1024;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -116,6 +116,10 @@ export interface RunChildOptions {
   cwd: string;
   systemPromptPath: string;
   taskPath: string;
+  sessionDirectory: string;
+  sessionPath: string;
+  childSessionId: string;
+  isResume?: boolean;
   runId: string;
   parentSessionId: string;
   timeoutSeconds: number;
@@ -131,6 +135,10 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     agent: options.agent,
     systemPromptPath: options.systemPromptPath,
     taskPath: options.taskPath,
+    sessionDirectory: options.sessionDirectory,
+    sessionPath: options.sessionPath,
+    childSessionId: options.childSessionId,
+    isResume: options.isResume,
     runId: options.runId,
     parentSessionId: options.parentSessionId,
   });
@@ -218,11 +226,12 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     id: options.agent.id,
     profile: options.agent.profile,
     goal: options.agent.goal,
-    dependsOn: [...options.agent.dependsOn],
     status,
     model: protocol.model ?? options.agent.model,
     thinking: options.agent.thinking,
     tools: [...options.agent.tools],
+    timeoutSeconds: options.timeoutSeconds,
+    ...(options.agent.resume ? { resumedFrom: options.agent.resume.handle } : {}),
     finalText: capped.text,
     durationMs: Date.now() - startedAt,
     ...(exitCode !== undefined ? { exitCode } : {}),
