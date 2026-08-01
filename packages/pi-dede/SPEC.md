@@ -30,6 +30,7 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 7. **Bounded continuation:** a timed-out child keeps its identity and may receive only a 30–180 second solo extension.
 8. **No recursive delegation:** children load no extensions and receive `PI_DEDE_DEPTH=1`.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
+10. **Terminal-aware execution:** when the master runs in a Herdr pane, children are shown in temporary sibling panes without changing their headless protocol.
 
 ## 3. Public tool
 
@@ -144,6 +145,8 @@ pi --mode json --print --no-approve \
 
 The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
 
+When the master environment contains `HERDR_ENV=1` and `HERDR_PANE_ID`, the extension attempts to create a sibling pane with `herdr pane split` and dispatches a private supervisor with `herdr pane run`. The supervisor launches the same invocation, displays bounded activity in the terminal, and spools exact stdout/stderr back to the parent collector. Delegated children remain headless processes; `herdr agent start` is not used. Setup failures before command acceptance fall back to direct spawning. Failures after command acceptance never launch a duplicate direct child. The temporary pane closes after completion or cancellation.
+
 The system prompt tells every child to:
 
 - complete only the bounded assignment and stop when answered;
@@ -162,9 +165,9 @@ Initial child timeout precedence is explicit agent value, run default, then 120 
 
 Resume timeout precedence is explicit agent value, run default, then 60 seconds. A resume is rejected above 180 seconds and must still meet the 30-second minimum.
 
-A child's timer starts when its process starts. Timeout terminates its complete process tree and marks only that child `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
+A child has one execution deadline beginning when its runner starts. Herdr setup time is charged against that budget so pane dispatch cannot extend it. Timeout terminates its complete process tree and marks only that child `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
 
-Parent abort, session replacement, reload, or shutdown cancels queued work and terminates every running process tree. Graceful termination is followed by forced termination after five seconds.
+Parent abort, session replacement, reload, or shutdown cancels queued work and terminates every running process tree. Graceful termination is followed by forced termination after five seconds. For Herdr children, cancellation is relayed to the pane supervisor and process group before the pane is force-closed.
 
 ## 9. JSON collection and progress
 
@@ -236,7 +239,7 @@ Tool allowlists are capability reduction, not an OS sandbox. Children retain the
 
 Explicit `agents[].env` values are part of the tool call and therefore stored in the master transcript. Profile-configured values are not copied into prompts, progress, or results, but are plaintext in the sidecar file. Protected startup/control variables prevent environment overrides from changing the spawned executable, injecting runtime preload code, restoring the parent's session identity, or enabling recursive delegation.
 
-Prompts use a mode-`0700` run directory and mode-`0600` files. Child conversations use Pi's persistent project session directory and remain until the user removes them through Pi's normal session management. No user-controlled prompt appears directly in process arguments. Child output and repository text are untrusted and never executed by the extension.
+Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch manifests and protocol spools use the same private directory and mode-`0600` files; inherited Herdr pane identity is replaced by the new pane's authoritative environment. Child conversations use Pi's persistent project session directory and remain until the user removes them through Pi's normal session management. No user-controlled prompt appears directly in process arguments. Child output and repository text are untrusted and never executed by the extension.
 
 ## 13. Non-goals
 

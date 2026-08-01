@@ -39,6 +39,7 @@ The master owns decomposition, comparison, verification, planning, and the final
 - Session-scoped continuation handles for timed-out children
 - Throttled TUI progress with elapsed/deadline display
 - Nested usage accounting and process-tree cancellation
+- Automatic live child panes when the master runs inside Herdr
 - Child resource discovery disabled
 
 ## Install
@@ -56,6 +57,14 @@ npm install
 npm run check
 pi -e ./src/index.ts
 ```
+
+## Herdr panes
+
+When the master Pi process has `HERDR_ENV=1` and a `HERDR_PANE_ID`, `pi-dede` automatically opens each running child in a sibling [Herdr](https://herdr.dev/docs/agent-automation/) pane. The pane shows concise tool activity and the final answer while the normal structured JSON protocol continues to feed the master. It closes when the child finishes or is cancelled.
+
+No configuration is required. If Herdr is unavailable or pane setup fails before the child command is accepted, `pi-dede` safely falls back to its normal direct child process. It never retries directly after Herdr has accepted a command, avoiding duplicate mutation work.
+
+The integration uses `herdr pane split` and `herdr pane run`, rather than `herdr agent start`, because delegated Pi children remain non-interactive `--mode json --print` processes. Timeouts, Esc cancellation, usage accounting, persistent child sessions, and short resume behavior are unchanged.
 
 ## Evidence fan-out
 
@@ -198,7 +207,7 @@ Children do not inherit the master's loaded extensions. To use an extension-regi
 
 ## Security and isolation
 
-Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled unless explicitly changed through configured `additionalArgs`. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts are mode-`0600` temporary files rather than command-line text.
+Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled unless explicitly changed through configured `additionalArgs`. Inside Herdr, a private supervisor launches the same command in a temporary sibling pane and spools its exact JSON output back to the extension; outside Herdr, the command is spawned directly. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts and Herdr launch manifests are mode-`0600` temporary files rather than command-line text.
 
 Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. `AGENTS.md`, skills, and project instructions are not inherited, so pass only the relevant trusted rules in `sharedContext`.
 

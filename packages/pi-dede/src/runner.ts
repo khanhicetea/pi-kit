@@ -1,7 +1,8 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { tryLaunchHerdrChild, type HerdrChild } from "./herdr.ts";
 import { buildChildInvocation } from "./invocation.ts";
 import { childUsage, PiJsonCollector, type CollectedProtocol } from "./json-events.ts";
 import type { DedeChildResult, ResolvedAgent } from "./types.ts";
@@ -42,42 +43,58 @@ function signalTree(proc: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
+type ManagedChild = ChildProcess | HerdrChild;
+
 interface TrackedProcess {
-  proc: ChildProcess;
+  child: ManagedChild;
   closed: Promise<void>;
+  signal: (signal: NodeJS.Signals) => void | Promise<void>;
 }
 
-/** Tracks complete process groups for cancellation and session shutdown. */
+function isHerdrChild(child: ManagedChild): child is HerdrChild {
+  return "completion" in child && "signal" in child;
+}
+
+/** Tracks complete process groups and Herdr pane children for cancellation and session shutdown. */
 export class ChildProcessManager {
   private readonly tracked = new Set<TrackedProcess>();
 
-  track(proc: ChildProcess): () => void {
+  track(child: ManagedChild): () => void {
     let resolveClosed!: () => void;
-    const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-    const tracked = { proc, closed };
+    const observedClosed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+    const tracked: TrackedProcess = {
+      child,
+      closed: observedClosed,
+      signal: isHerdrChild(child)
+        ? (signal) => child.signal(signal)
+        : (signal) => signalTree(child, signal),
+    };
     this.tracked.add(tracked);
     const finish = () => {
       resolveClosed();
       this.tracked.delete(tracked);
     };
-    proc.once("close", finish);
-    proc.once("error", finish);
+    if (isHerdrChild(child)) void child.closed.then(finish, finish);
+    else {
+      child.once("close", finish);
+      child.once("error", finish);
+    }
     return finish;
   }
 
-  async terminate(proc: ChildProcess): Promise<void> {
-    const tracked = [...this.tracked].find((item) => item.proc === proc);
+  async terminate(child: ManagedChild): Promise<void> {
+    const tracked = [...this.tracked].find((item) => item.child === child);
     if (!tracked) return;
-    signalTree(proc, "SIGTERM");
+    await tracked.signal("SIGTERM");
     await Promise.race([tracked.closed, delay(5000)]);
     if (this.tracked.has(tracked)) {
-      signalTree(proc, "SIGKILL");
+      await tracked.signal("SIGKILL");
       await Promise.race([tracked.closed, delay(1000)]);
     }
   }
 
   async killAll(): Promise<void> {
-    await Promise.all([...this.tracked].map((item) => this.terminate(item.proc)));
+    await Promise.all([...this.tracked].map((item) => this.terminate(item.child)));
   }
 
   get size(): number {
@@ -149,53 +166,78 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   let timedOut = false;
   let cancelled = false;
   let spawnError: string | undefined;
-  let proc!: ChildProcess;
   const collector = new PiJsonCollector((text) => options.onProgress?.(text, collector.snapshot()));
+  const collectStderr = (chunk: Buffer) => {
+    stderr = tailUtf8(stderr, chunk.toString("utf8"), STDERR_CAP);
+  };
 
-  const exitCode = await new Promise<number | undefined>((resolve) => {
-    let settled = false;
-    const settle = (code?: number) => {
-      if (settled) return;
-      settled = true;
-      resolve(code);
-    };
+  let child: ManagedChild;
+  const herdrChild = await tryLaunchHerdrChild({
+    invocation,
+    cwd: options.cwd,
+    privateDirectory: dirname(options.systemPromptPath),
+    label: options.agent.id,
+    onStdout: (chunk) => collector.push(chunk),
+    onStderr: collectStderr,
+    signal: options.signal,
+  });
 
-    proc = spawn(invocation.command, invocation.args, {
+  if (herdrChild) {
+    child = herdrChild;
+  } else {
+    const proc = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: invocation.env,
       shell: false,
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    options.manager.track(proc);
-
     proc.stdout?.on("data", (chunk: Buffer) => collector.push(chunk));
-    proc.stderr?.on("data", (chunk: Buffer) => { stderr = tailUtf8(stderr, chunk.toString("utf8"), STDERR_CAP); });
-    proc.once("close", (code) => settle(code ?? undefined));
-    proc.once("error", (error) => {
-      spawnError = error.message;
-      settle(undefined);
-    });
+    proc.stderr?.on("data", collectStderr);
+    child = proc;
+  }
+  options.manager.track(child);
 
-    const abort = () => {
-      cancelled = true;
-      void options.manager.terminate(proc);
-    };
-    if (options.signal?.aborted) abort();
-    else options.signal?.addEventListener("abort", abort, { once: true });
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      void options.manager.terminate(proc);
-    }, options.timeoutSeconds * 1000);
-    timer.unref?.();
-
+  const exitCode = await new Promise<number | undefined>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
     const cleanup = () => {
       clearTimeout(timer);
       options.signal?.removeEventListener("abort", abort);
     };
-    proc.once("close", cleanup);
-    proc.once("error", cleanup);
+    const settle = (code?: number) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(code);
+    };
+    const abort = () => {
+      cancelled = true;
+      void options.manager.terminate(child);
+    };
+
+    if (isHerdrChild(child)) {
+      void child.completion.then((completion) => {
+        spawnError = completion.error;
+        settle(completion.exitCode);
+      });
+    } else {
+      child.once("close", (code) => settle(code ?? undefined));
+      child.once("error", (error) => {
+        spawnError = error.message;
+        settle(undefined);
+      });
+    }
+
+    if (options.signal?.aborted) abort();
+    else options.signal?.addEventListener("abort", abort, { once: true });
+
+    const remainingMs = Math.max(0, options.timeoutSeconds * 1000 - (Date.now() - startedAt));
+    timer = setTimeout(() => {
+      timedOut = true;
+      void options.manager.terminate(child);
+    }, remainingMs);
+    timer.unref?.();
   });
 
   const protocol = collector.end();
