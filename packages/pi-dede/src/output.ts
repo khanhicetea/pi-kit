@@ -66,6 +66,24 @@ export function progressContent(details: DedeToolDetails): string {
   return `Đệ Đệ: ${done}/${details.results.length} done · ${running} running · ${Math.round(details.durationMs / 1000)}s elapsed`;
 }
 
+export function formatSettledSummary(results: readonly DedeChildResult[]): string | undefined {
+  if (results.length === 0) return undefined;
+  const byModel = new Map<string, { count: number; cost: number }>();
+  for (const result of results) {
+    const group = byModel.get(result.model) ?? { count: 0, cost: 0 };
+    group.count++;
+    group.cost += result.usage.cost;
+    byModel.set(result.model, group);
+  }
+
+  const noun = results.length === 1 ? "subagent" : "subagents";
+  const totalCost = results.reduce((sum, result) => sum + result.usage.cost, 0);
+  const groups = [...byModel]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([model, usage]) => `${model}: ${usage.count} ${usage.count === 1 ? "subagent" : "subagents"} · $${usage.cost.toFixed(4)}`);
+  return `Đệ Đệ: ${results.length} ${noun} · $${totalCost.toFixed(4)} total\n${groups.join("\n")}`;
+}
+
 export function cloneDetails(details: DedeToolDetails): DedeToolDetails {
   return {
     ...details,

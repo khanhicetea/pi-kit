@@ -3,6 +3,7 @@ import {
   CHILD_MODEL_MAX_BYTES,
   deriveStatus,
   formatModelContent,
+  formatSettledSummary,
   MODEL_CONTENT_MAX_BYTES,
   MODEL_CONTENT_MAX_LINES,
 } from "../src/output.ts";
@@ -57,6 +58,25 @@ describe("output", () => {
     expect(text).toContain("Short resume available: `dede_handle`");
     expect(text).toContain('"resume": "dede_handle"');
     expect(text.indexOf("Short resume available")).toBeLessThan(text.indexOf("Partial output"));
+  });
+
+  it("summarizes settled subagent count and cost by model id", () => {
+    const first = child("first", "succeeded");
+    first.model = "anthropic/claude-sonnet";
+    first.usage.cost = 0.0123;
+    const second = child("second", "failed");
+    second.model = "openai-codex/gpt-5";
+    second.usage.cost = 0.004;
+    const third = child("third", "succeeded");
+    third.model = "anthropic/claude-sonnet";
+    third.usage.cost = 0.0007;
+
+    expect(formatSettledSummary([first, second, third])).toBe([
+      "Đệ Đệ: 3 subagents · $0.0170 total",
+      "anthropic/claude-sonnet: 2 subagents · $0.0130",
+      "openai-codex/gpt-5: 1 subagent · $0.0040",
+    ].join("\n"));
+    expect(formatSettledSummary([])).toBeUndefined();
   });
 
   it("bounds each child near 4 KiB and the aggregate to 12 KiB", () => {

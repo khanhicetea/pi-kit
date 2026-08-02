@@ -34,6 +34,7 @@ describe("extension registration", () => {
     expect(tool.parameters.properties.timeoutSeconds).toMatchObject({ minimum: 30, maximum: 1800 });
     expect(tool.parameters.properties.agents.items.properties.timeoutSeconds).toMatchObject({ minimum: 30, maximum: 1800 });
     expect(on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
+    expect(on).toHaveBeenCalledWith("agent_settled", expect.any(Function));
   });
 
   it("registers nothing in a child process", () => {

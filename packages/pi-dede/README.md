@@ -54,6 +54,7 @@ The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads 
 - Session-scoped continuation handles for timed-out children
 - Throttled TUI progress with elapsed/deadline display
 - Nested usage accounting and process-tree cancellation
+- Per-turn settled summary of subagent count and cost grouped by model ID
 - Automatic live child tabs when the master runs inside Herdr
 - Child resource discovery disabled
 

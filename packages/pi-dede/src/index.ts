@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { loadDedeConfig } from "./config.ts";
 import { buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
 import { aggregateUsages } from "./json-events.ts";
-import { cloneDetails, deriveStatus, formatModelContent, progressContent, zeroUsage } from "./output.ts";
+import { cloneDetails, deriveStatus, formatModelContent, formatSettledSummary, progressContent, zeroUsage } from "./output.ts";
 import { renderDedeCall, renderDedeResult } from "./render.ts";
 import { ChildResumeStore, type ResumeLease } from "./resume.ts";
 import { ArtifactManager, ChildProcessManager, createSecureRunDirectory, removeRunDirectory, runChild, writeSecurePrompt } from "./runner.ts";
@@ -52,6 +52,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   let artifacts: ArtifactManager | undefined;
   let resumeStore: ChildResumeStore | undefined;
   let shuttingDown = false;
+  const unsettledResults: DedeChildResult[] = [];
 
   const updateFooter = (active: number, queued: number) => {
     const parts = [
@@ -73,9 +74,16 @@ export default function dedeExtension(pi: ExtensionAPI): void {
     runDirectories.clear();
     await artifacts?.cleanup();
     await resumeStore?.cleanup();
+    unsettledResults.length = 0;
     for (const ui of uiContexts.keys()) ui.ui.setStatus("pi-dede", undefined);
     ctx.ui.setStatus("pi-dede", undefined);
     uiContexts.clear();
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
+    const summary = formatSettledSummary(unsettledResults);
+    unsettledResults.length = 0;
+    if (summary) ctx.ui.notify(summary, "info");
   });
 
   pi.registerTool({
@@ -320,6 +328,14 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           usage: aggregateUsages(detailedUsages),
         };
       } finally {
+        if (!shuttingDown) {
+          unsettledResults.push(...details.results.map((result) => ({
+            ...result,
+            tools: [...result.tools],
+            usage: { ...result.usage },
+            activity: [],
+          })));
+        }
         clearInterval(heartbeat);
         if (pendingEmit) clearTimeout(pendingEmit);
         if (claimedResume && !claimedResumeHandled) resumeStore!.release(claimedResume.handle);
