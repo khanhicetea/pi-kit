@@ -15,6 +15,7 @@
       "./packages/web-access-kit/extensions/web-access-kit.ts"
     ],
     "skills": [
+      "./packages/pi-dede/skills",
       "./packages/pi-wui/skills",
       "./packages/web-access-kit/skills"
     ]

@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "keywords": ["pi-package", "pi-extension", "subagents"],
-  "files": ["src", "README.md", "LICENSE", "SPEC.md"],
+  "files": ["src", "skills", "README.md", "LICENSE", "SPEC.md"],
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
@@ -29,6 +29,7 @@
     "vitest": "^3.2.0"
   },
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": ["./src/index.ts"],
+    "skills": ["./skills"]
   }
 }

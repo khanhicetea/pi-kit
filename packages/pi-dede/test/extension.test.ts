@@ -19,6 +19,9 @@ describe("extension registration", () => {
     expect(guidance).toContain("first-pass repository orientation");
     expect(guidance).toContain("planning, synthesis");
     expect(guidance).toContain("two local tool calls");
+    expect(guidance).toContain("cloned prompts");
+    expect(guidance).toContain("compact contract");
+    expect(guidance).toContain("success criteria");
     expect(guidance).toContain("master");
     expect(guidance).toContain("30-180 second extension");
     expect(guidance).toContain("do not restart completed work or resume blindly");

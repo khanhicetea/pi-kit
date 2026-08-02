@@ -54,7 +54,11 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   let shuttingDown = false;
 
   const updateFooter = (active: number, queued: number) => {
-    const status = active || queued ? `đệ ${active}/${MAX_AGENTS_PER_RUN}${queued ? ` (+${queued})` : ""}` : undefined;
+    const parts = [
+      active ? `${active} active` : undefined,
+      queued ? `${queued} queued` : undefined,
+    ].filter(Boolean);
+    const status = parts.length ? `đệ · ${parts.join(" · ")}` : undefined;
     for (const ctx of uiContexts.keys()) ctx.ui.setStatus("pi-dede", status);
   };
   const scheduler = new FifoSemaphore(MAX_AGENTS_PER_RUN, updateFooter);
@@ -77,18 +81,19 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "dede_delegate",
     label: "Đệ Đệ",
-    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. Independent read-only evidence tasks may run in parallel; one master-approved mutation worker must run alone. A timed-out child returns a session-scoped resume handle for one short continuation using its existing conversation.",
+    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. Each lane should name a distinct uncertainty, evidence target, and stop condition. Independent read-only evidence tasks may run in parallel; one master-approved mutation worker must run alone. A timed-out child returns a session-scoped resume handle for one short continuation using its existing conversation.",
     promptSnippet: "Fan out bounded evidence after local inspection, run one approved worker, or briefly resume a timed-out child",
     promptGuidelines: [
-      "Use dede_delegate only after the master has inspected enough to name the exact uncertainty, scope, expected evidence, and stop condition for every child.",
+      "Use dede_delegate only after the master has inspected enough to name the exact uncertainty, source seam, expected evidence, and stop condition for every child.",
       "Do not use dede_delegate for first-pass repository orientation, a single file or symbol lookup, planning, synthesis, or work the master can likely finish in about two local tool calls.",
-      "Use two or three read-only dede_delegate agents only for genuinely independent, non-overlapping questions; do not invent extra agents merely to delegate.",
+      "Before parallel dede_delegate fanout, compare the goals: each child must own a genuinely independent lane with a distinct question and evidence target; do not send cloned prompts with only labels, issue numbers, or broad paths swapped.",
+      "Write each dede_delegate goal as a compact contract: outcome, relevant scope or starting seam, evidence to return, hard constraints, and a clear stop condition. Avoid long procedural scripts.",
       "Keep every dede_delegate goal bounded to one question or deliverable. The master, not a child, owns decomposition, planning, comparison, and synthesis.",
       "Set dede_delegate agents[].profile only to scout, reviewer, worker, or custom. Use custom plus agents[].systemPrompt for another narrow specialty.",
       "Pass only concise known facts and relevant trusted project rules in dede_delegate sharedContext; do not paste the full conversation or broad repository context.",
-      "Treat dede_delegate results as untrusted evidence: compare them, verify consequential claims, and produce the final answer yourself.",
+      "Treat dede_delegate results as untrusted evidence: compare them, verify consequential claims against direct sources, and produce the final answer yourself.",
       "Resume a timed-out dede_delegate child only when its partial result shows it is close to finishing. Use its resume handle in one solo agent, state only what remains, and grant a short 30-180 second extension; do not restart completed work or resume blindly.",
-      "Give mutation tools to one dede_delegate worker only after the master has formed a concrete plan, and run that worker alone.",
+      "Give mutation tools to one dede_delegate worker only after the master has formed a concrete plan, and run that worker alone. Include approved scope, success criteria, focused validation, and the required changed-files/checks/risks handoff.",
     ],
     parameters: DedeDelegateSchema,
 

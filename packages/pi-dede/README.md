@@ -24,6 +24,20 @@ Do not use it for:
 
 The master owns decomposition, comparison, verification, planning, and the final answer.
 
+### Write delegation lanes as contracts
+
+After local inspection, give every child a compact contract:
+
+1. one outcome or question;
+2. a named source seam or scope;
+3. the evidence to return;
+4. true hard constraints;
+5. a stop condition.
+
+Before parallel fan-out, compare the goals. Each lane must remain distinct without its id—do not clone one prompt and swap only labels, issue numbers, or broad paths. For a worker, also provide the approved scope, success criteria, focused validation, and required changed-files/checks/risks handoff.
+
+The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads it on demand when a delegation/orchestration task matches, or you can invoke `/skill:pi-dede` explicitly.
+
 ## Features
 
 - One LLM-callable tool: `dede_delegate`
@@ -32,6 +46,7 @@ The master owns decomposition, comparison, verification, planning, and the final
 - Parallel read-only evidence collection
 - One explicitly authorized coding worker per mutation run
 - Built-in `scout`, `reviewer`, `worker`, and `custom` profiles
+- Packaged `pi-dede` orchestration skill with bounded recipes and anti-pattern repairs
 - 180-second default and 1800-second maximum child deadline
 - Compact 400-word response contract
 - 4 KiB model-visible limit per child and 12 KiB aggregate limit
@@ -67,6 +82,8 @@ No configuration is required. If Herdr is unavailable or tab setup fails before 
 The integration uses `herdr tab create` and `herdr pane run`, rather than `herdr agent start`, because delegated Pi children remain non-interactive `--mode json --print` processes. Timeouts, Esc cancellation, usage accounting, persistent child sessions, and short resume behavior are unchanged.
 
 ## Evidence fan-out
+
+The two lanes below answer different questions and request different evidence: one establishes flow and invariants; the other evaluates replay/expiry failure modes.
 
 ```json
 {

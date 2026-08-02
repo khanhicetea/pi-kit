@@ -31,6 +31,7 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 8. **No recursive delegation:** children load no extensions and receive `PI_DEDE_DEPTH=1`.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
 10. **Terminal-aware execution:** when the master runs in a Herdr pane, children are shown in temporary sibling tabs without changing their headless protocol.
+11. **Progressive orchestration guidance:** the package exposes a parent-only skill that teaches the delegation gate, compact lane contracts, distinct fan-out, verification, and bounded recipes without widening the runtime workflow surface.
 
 ## 3. Public tool
 
@@ -227,9 +228,9 @@ Larger final text is stored in a mode-`0600` session artifact removed at session
 
 ## 11. TUI contract
 
-The call view shows mode, count, tool preset, timeout, and bounded goal preview. Resume calls are labeled `short resume`. While running, each row shows status, resume state, model, thinking, elapsed/deadline, latest bounded activity, and `Esc to cancel`. Timed-out expanded results display the handle and 30–180 second policy. Answer deltas are never rendered.
+The call view shows the master-owned objective, mode, count, profile, tool preset, timeout, and bounded goal preview. Resume calls are labeled `short resume`. While running, the header separates done, running, and queued counts and shows aggregate elapsed time plus `Esc to cancel`; each child row shows a status-specific icon, profile, resume state, model, thinking, elapsed/deadline, and latest bounded activity. Timed-out and cancelled states are visually distinct from failures. Timed-out expanded results display the handle and 30–180 second policy. Answer deltas are never rendered.
 
-Collapsed final output shows one compact answer preview, the inspectable session ID, and usage/duration per child. Expanded output shows assignment, budget, session ID with the `pi --session <id>` command, bounded activity, errors, Markdown result, artifact path, and usage.
+Collapsed final output shows aggregate outcome/usage, one compact answer preview, the inspectable session ID, and usage/duration per child. Expanded output shows aggregate totals, assignment, budget, session ID with the `pi --session <id>` command, the latest bounded activity with omitted-event disclosure, errors, Markdown result, artifact path, and usage.
 
 UI methods are optional; execution works in TUI, RPC, JSON, and print modes.
 
