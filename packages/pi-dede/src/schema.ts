@@ -22,10 +22,10 @@ import {
   type ValidationContext,
 } from "./types.ts";
 
-export const DEFAULT_CHILD_TIMEOUT_SECONDS = 120;
+export const DEFAULT_CHILD_TIMEOUT_SECONDS = 180;
 export const DEFAULT_RESUME_TIMEOUT_SECONDS = 60;
 export const MIN_CHILD_TIMEOUT_SECONDS = 30;
-export const MAX_CHILD_TIMEOUT_SECONDS = 600;
+export const MAX_CHILD_TIMEOUT_SECONDS = 1800;
 export const MAX_RESUME_TIMEOUT_SECONDS = 180;
 export const MAX_AGENTS_PER_RUN = 3;
 

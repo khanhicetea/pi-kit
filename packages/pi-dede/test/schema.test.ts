@@ -30,7 +30,7 @@ describe("public schema", () => {
     const input = {
       objective: "Inspect",
       agents: [{ id: "a", goal: "x", timeoutSeconds: 30, env: { CHILD_MODE: "inspect" } }],
-      timeoutSeconds: 600,
+      timeoutSeconds: 1800,
     };
     expect(Check(DedeDelegateSchema, input)).toBe(true);
     expect(Check(DedeDelegateSchema, {
@@ -43,7 +43,7 @@ describe("public schema", () => {
     })).toBe(false);
     expect(Check(DedeDelegateSchema, {
       ...input,
-      agents: [{ ...input.agents[0], timeoutSeconds: 601 }],
+      agents: [{ ...input.agents[0], timeoutSeconds: 1801 }],
     })).toBe(false);
     expect(Check(DedeDelegateSchema, {
       objective: "Finish",
@@ -145,21 +145,21 @@ describe("semantic validation", () => {
     expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", toolPreset: "custom", tools: ["read", "read"] }] }), context)).toThrow(/duplicates/);
   });
 
-  it("accepts timeout values from 30 through 600 seconds", () => {
+  it("accepts timeout values from 30 through 1800 seconds", () => {
     expect(() => validateAndResolve(valid({ timeoutSeconds: 30 }), context)).not.toThrow();
-    expect(() => validateAndResolve(valid({ timeoutSeconds: 600 }), context)).not.toThrow();
-    expect(() => validateAndResolve(valid({ timeoutSeconds: 29 }), context)).toThrow(/30 to 600/);
-    expect(() => validateAndResolve(valid({ timeoutSeconds: 601 }), context)).toThrow(/30 to 600/);
+    expect(() => validateAndResolve(valid({ timeoutSeconds: 1800 }), context)).not.toThrow();
+    expect(() => validateAndResolve(valid({ timeoutSeconds: 29 }), context)).toThrow(/30 to 1800/);
+    expect(() => validateAndResolve(valid({ timeoutSeconds: 1801 }), context)).toThrow(/30 to 1800/);
   });
 
   it("resolves per-agent timeout ahead of run default", () => {
-    expect(validateAndResolve(valid(), context)[0].timeoutSeconds).toBe(120);
+    expect(validateAndResolve(valid(), context)[0].timeoutSeconds).toBe(180);
     expect(validateAndResolve(valid({ timeoutSeconds: 240 }), context)[0].timeoutSeconds).toBe(240);
     expect(validateAndResolve(valid({
       timeoutSeconds: 240,
       agents: [{ id: "a", goal: "x", timeoutSeconds: 45 }],
     }), context)[0].timeoutSeconds).toBe(45);
-    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", timeoutSeconds: 30.5 }] }), context)).toThrow(/30 to 600/);
+    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", timeoutSeconds: 30.5 }] }), context)).toThrow(/30 to 1800/);
   });
 
   it("resumes one timed-out child with its original identity and a short deadline", () => {

@@ -28,8 +28,8 @@ describe("extension registration", () => {
     expect(tool.parameters.properties.agents.items.properties.resume).toMatchObject({ type: "string", maxLength: 128 });
     expect(tool.parameters.properties.agents.items.properties.env).toMatchObject({ type: "object", maxProperties: 64 });
     expect(tool.parameters.properties.agents.items.properties.profile.description).not.toContain("planner");
-    expect(tool.parameters.properties.timeoutSeconds).toMatchObject({ minimum: 30, maximum: 600 });
-    expect(tool.parameters.properties.agents.items.properties.timeoutSeconds).toMatchObject({ minimum: 30, maximum: 600 });
+    expect(tool.parameters.properties.timeoutSeconds).toMatchObject({ minimum: 30, maximum: 1800 });
+    expect(tool.parameters.properties.agents.items.properties.timeoutSeconds).toMatchObject({ minimum: 30, maximum: 1800 });
     expect(on).toHaveBeenCalledWith("session_shutdown", expect.any(Function));
   });
 

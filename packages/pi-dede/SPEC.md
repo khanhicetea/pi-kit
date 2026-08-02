@@ -23,7 +23,7 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 
 1. **Master ownership:** child output is untrusted evidence, never the final outcome.
 2. **Bounded fan-out:** at most three active child processes globally and per run.
-3. **Short synchronous runs:** 120-second default, 600-second maximum.
+3. **Bounded synchronous runs:** 180-second default, 1800-second maximum.
 4. **Bounded reasoning:** profile defaults are `low` or `medium`, not inherited from the master.
 5. **Small outputs:** children are instructed to use at most 400 words; model-visible output is capped at 4 KiB per child and 12 KiB aggregate.
 6. **Least privilege:** read-only excludes `bash`; mutation-capable work runs alone.
@@ -58,14 +58,14 @@ interface AgentRequest {
   model?: string;
   thinking?: Thinking;
   env?: Record<string, string>; // child-specific environment overrides
-  timeoutSeconds?: number;    // 30..600
+  timeoutSeconds?: number;    // 30..1800
 }
 
 interface DelegateRequest {
   objective: string;          // master-owned decision/outcome
   sharedContext?: string;     // concise known facts and relevant trusted rules
   agents: AgentRequest[];     // 1..3
-  timeoutSeconds?: number;    // 30..600, default 120
+  timeoutSeconds?: number;    // 30..1800, default 180
 }
 ```
 
@@ -161,7 +161,7 @@ Workers additionally report files changed and verification within the same word 
 
 ## 8. Timeouts and cancellation
 
-Initial child timeout precedence is explicit agent value, run default, then 120 seconds. Accepted values are 30 through 600 seconds.
+Initial child timeout precedence is explicit agent value, run default, then 180 seconds. Accepted values are 30 through 1800 seconds.
 
 Resume timeout precedence is explicit agent value, run default, then 60 seconds. A resume is rejected above 180 seconds and must still meet the 30-second minimum.
 
@@ -259,6 +259,6 @@ Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch mani
 Evaluate only after v0.2 behavior is measured:
 
 1. in-process SDK children for provider compatibility and lower startup cost;
-2. background execution if synchronous cache expiry remains material under the 120-second default;
+2. background execution if synchronous cache expiry remains material under the 180-second default;
 3. hard turn/tool-call budgets if prompt and deadline budgets do not sufficiently bound work;
 4. sandbox and path policies.

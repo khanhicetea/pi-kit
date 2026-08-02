@@ -32,7 +32,7 @@ The master owns decomposition, comparison, verification, planning, and the final
 - Parallel read-only evidence collection
 - One explicitly authorized coding worker per mutation run
 - Built-in `scout`, `reviewer`, `worker`, and `custom` profiles
-- 120-second default and 600-second maximum child deadline
+- 180-second default and 1800-second maximum child deadline
 - Compact 400-word response contract
 - 4 KiB model-visible limit per child and 12 KiB aggregate limit
 - Persistent child session IDs for later inspection with `pi --session <id>`
@@ -150,7 +150,7 @@ Child sessions use Pi's normal persistent session storage and appear in the sess
 | `worker` | coding | `medium` | Execute one concrete approved change |
 | `custom` | read-only | `low` | Caller-defined narrow specialty |
 
-Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial timeouts range from 30 to 600 seconds and default to 120 seconds; resumed children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second continuation budget.
+Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial timeouts range from 30 to 1800 seconds and default to 180 seconds; resumed children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second continuation budget.
 
 Persistent profile model, thinking, and environment overrides—and extra child CLI arguments—may be placed in:
 
@@ -198,7 +198,7 @@ Children do not inherit the master's loaded extensions. To use an extension-regi
 | Final merged environment overrides | 64 variables / 16 KiB UTF-8 |
 | Environment value | 8 KiB UTF-8 |
 | Agents per run | 1–3 |
-| Initial child timeout | 30–600 seconds; default 120 |
+| Initial child timeout | 30–1800 seconds; default 180 |
 | Resumed child extension | 30–180 seconds; default 60 |
 | Child response instruction | 400 words |
 | Model-visible child result | 4 KiB / 160 lines |

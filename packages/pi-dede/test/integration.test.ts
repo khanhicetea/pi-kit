@@ -101,7 +101,7 @@ describe("fake Pi integration", () => {
 
       expect(result.details.version).toBe(2);
       expect(result.details.results.map((child: any) => child.id)).toEqual(["slow", "fast"]);
-      expect(result.details.results.every((child: any) => child.status === "succeeded" && child.timeoutSeconds === 120)).toBe(true);
+      expect(result.details.results.every((child: any) => child.status === "succeeded" && child.timeoutSeconds === 180)).toBe(true);
       expect(result.details.results.every((child: any) => /^[0-9a-f-]{36}$/.test(child.sessionId))).toBe(true);
       expect(result.content[0].text).toContain(`pi --session ${result.details.results[0].sessionId}`);
       const logged = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
