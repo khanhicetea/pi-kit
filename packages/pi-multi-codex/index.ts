@@ -399,7 +399,7 @@ export default function multiCodex(pi: ExtensionAPI) {
     if (!fastModeEnabled || !supportsFastMode(ctx) || !isRecord(event.payload)) return;
     return {
       ...event.payload,
-      service_tier: "priority",
+      service_tier: "fast",
     };
   });
 }
