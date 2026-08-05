@@ -8,6 +8,7 @@ const agent = (tools: ResolvedAgent["tools"]): ResolvedAgent => ({
   goal: "SECRET GOAL THAT MUST NOT BE IN ARGV",
   toolPreset: tools.length ? "custom" : "none",
   tools,
+  additionalArgs: [],
   model: "test/model",
   thinking: "high",
   env: {},
@@ -34,7 +35,10 @@ describe("child invocation", () => {
     });
     const args = invocation.args.join(" ");
     expect(args).toContain("--mode json --print --session-dir /tmp/pi-dede-sessions --session /tmp/pi-dede-sessions/child.jsonl");
-    expect(args).toContain("--no-approve --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files");
+    expect(args).toContain("--no-approve --no-prompt-templates --no-themes");
+    expect(args).not.toContain("--no-extensions");
+    expect(args).not.toContain("--no-skills");
+    expect(args).not.toContain("--no-context-files");
     expect(args).not.toContain("--no-session");
     expect(args).toContain("--tools read,grep,find,ls");
     expect(args).toContain("--model test/model --thinking high");
@@ -104,7 +108,7 @@ describe("child invocation", () => {
     const extensionIndex = invocation.args.indexOf("-e");
     const taskIndex = invocation.args.indexOf(`@${invocationOptions.taskPath}`);
     expect(invocation.args.slice(extensionIndex, extensionIndex + 2)).toEqual(["-e", "/tmp/custom-extension.ts"]);
-    expect(extensionIndex).toBeGreaterThan(invocation.args.indexOf("--no-extensions"));
+    expect(extensionIndex).toBeGreaterThan(invocation.args.indexOf("--no-themes"));
     expect(extensionIndex).toBeLessThan(taskIndex);
   });
 

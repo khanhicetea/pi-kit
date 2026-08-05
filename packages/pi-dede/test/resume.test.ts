@@ -10,6 +10,7 @@ const agent: ResolvedAgent = {
   goal: "answer the bounded question",
   toolPreset: "read-only",
   tools: ["read", "grep"],
+  additionalArgs: [],
   model: "test/model",
   thinking: "low",
   env: { CHILD_MODE: "review" },

@@ -30,7 +30,7 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 7. **Bounded continuation:** a timed-out child keeps its identity and may receive only a 30–180 second solo extension.
 8. **No recursive delegation:** children load no extensions and receive `PI_DEDE_DEPTH=1`.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
-10. **Terminal-aware execution:** when the master runs in a Herdr pane, children are shown in temporary sibling tabs without changing their headless protocol.
+10. **Terminal-aware execution:** when the master runs in a Herdr pane, children are shown in a temporary horizontal split with vertical child panes without changing their headless protocol.
 11. **Progressive orchestration guidance:** the package exposes a parent-only skill that teaches the delegation gate, compact lane contracts, distinct fan-out, verification, and bounded recipes without widening the runtime workflow surface.
 
 ## 3. Public tool
@@ -105,7 +105,7 @@ Sidecar configuration paths:
 - `~/.pi/agent/pi-dede.json`
 - `.pi/pi-dede.json` for trusted projects only
 
-The config accepts `profiles.<profile>.model`, `profiles.<profile>.thinking`, `profiles.<profile>.env`, and a top-level `additionalArgs` string array. Extra arguments are inserted after pi-dede's built-in child options and before the task prompt; a trusted project's array replaces the global array. Environment maps contain portable string keys and string values. Session/delegation control names and process-startup variables (`PATH`, Node/Bun options, dynamic-loader variables, and `BASH_ENV`) are protected from overrides.
+The config accepts `profiles.<profile>.model`, `profiles.<profile>.thinking`, `profiles.<profile>.env`, optional `profiles.<profile>.additionalArgs`, and a top-level `additionalArgs` string array. Extra arguments are inserted after pi-dede's built-in child options and before the task prompt. The profile-specific list replaces the shared list for that profile when present, including an empty list; a trusted project's top-level array replaces the global array and profile fields override corresponding global profile fields. Environment maps contain portable string keys and string values. Session/delegation control names and process-startup variables (`PATH`, Node/Bun options, dynamic-loader variables, and `BASH_ENV`) are protected from overrides.
 
 ## 5. Tool capabilities
 
@@ -137,16 +137,17 @@ Each child is a separate process launched with `shell: false`, conceptually:
 ```sh
 pi --mode json --print --no-approve \
   --session-dir <pi-project-session-dir> --session <0600-child-session-file> \
-  --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files \
+  --no-prompt-templates --no-themes \
   --append-system-prompt <0600-system-file> \
   --tools read,grep,find,ls \
   --model <provider/model> --thinking <level> \
+  [effective shared-or-profile additionalArgs] \
   @<0600-task-file> "Complete the delegated task in the attached task file."
 ```
 
 The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
 
-When the master environment contains `HERDR_ENV=1` and `HERDR_PANE_ID`, the extension attempts to create a sibling tab with `herdr tab create` and dispatches a private supervisor in its root pane with `herdr pane run`. The supervisor launches the same invocation, displays bounded activity in the terminal, and spools exact stdout/stderr back to the parent collector. Delegated children remain headless processes; `herdr agent start` is not used. Setup failures before command acceptance fall back to direct spawning. Failures after command acceptance never launch a duplicate direct child. The temporary tab closes after completion or cancellation.
+When the master environment contains `HERDR_ENV=1` and `HERDR_PANE_ID`, the extension first creates a temporary horizontal split below the master with `herdr pane split ... --direction down`, then creates one vertical `--direction right` split for each additional child. A private supervisor runs in each child pane with `herdr pane run`; it launches the same invocation, displays bounded activity in the terminal, and spools exact stdout/stderr back to the parent collector. Delegated children remain headless processes; `herdr tab create` and `herdr agent start` are not used. Setup failures before command acceptance fall back to direct spawning. Failures after command acceptance never launch a duplicate direct child. Each temporary child pane closes after completion or cancellation.
 
 The system prompt tells every child to:
 
@@ -166,9 +167,9 @@ Initial child timeout precedence is explicit agent value, run default, then 180 
 
 Resume timeout precedence is explicit agent value, run default, then 60 seconds. A resume is rejected above 180 seconds and must still meet the 30-second minimum.
 
-A child has one execution deadline beginning when its runner starts. Herdr setup time is charged against that budget so tab dispatch cannot extend it. Timeout terminates its complete process tree and marks only that child `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
+A child has one execution deadline beginning when its runner starts. Herdr setup time is charged against that budget so pane dispatch cannot extend it. Timeout terminates its complete process tree and marks only that child `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
 
-Parent abort, session replacement, reload, or shutdown cancels queued work and terminates every running process tree. Graceful termination is followed by forced termination after five seconds. For Herdr children, cancellation is relayed to the tab supervisor and process group before the tab is force-closed.
+Parent abort, session replacement, reload, or shutdown cancels queued work and terminates every running process tree. Graceful termination is followed by forced termination after five seconds. For Herdr children, cancellation is relayed to the pane supervisor and process group before the child pane is force-closed.
 
 ## 9. JSON collection and progress
 
@@ -236,11 +237,11 @@ UI methods are optional; execution works in TUI, RPC, JSON, and print modes.
 
 ## 12. Security model
 
-Tool allowlists are capability reduction, not an OS sandbox. Children retain the user's OS permissions, inherit the master's process environment, and read-only children may read any OS-readable file. Project resources and provider extensions are disabled. Relevant trusted rules must be passed explicitly in concise `sharedContext`.
+Tool allowlists are capability reduction, not an OS sandbox. Children retain the user's OS permissions, inherit the master's process environment, and read-only children may read any OS-readable file. Extensions, skills, and context files use Pi's normal discovery unless changed by the effective `additionalArgs`; prompt templates and themes are disabled by default. Relevant trusted rules should be passed explicitly in concise `sharedContext`.
 
 Explicit `agents[].env` values are part of the tool call and therefore stored in the master transcript. Profile-configured values are not copied into prompts, progress, or results, but are plaintext in the sidecar file. Protected startup/control variables prevent environment overrides from changing the spawned executable, injecting runtime preload code, restoring the parent's session identity, or enabling recursive delegation.
 
-Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch manifests and protocol spools use the same private directory and mode-`0600` files; inherited Herdr pane identity is replaced by the new pane's authoritative environment. Child conversations use Pi's persistent project session directory and remain until the user removes them through Pi's normal session management. No user-controlled prompt appears directly in process arguments. Child output and repository text are untrusted and never executed by the extension.
+Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch manifests and protocol spools use the same private directory and mode-`0600` files; inherited Herdr pane identity is replaced by the child pane's authoritative environment. Child conversations use Pi's persistent project session directory and remain until the user removes them through Pi's normal session management. No user-controlled prompt appears directly in process arguments. Child output and repository text are untrusted and never executed by the extension.
 
 ## 13. Non-goals
 
@@ -250,7 +251,7 @@ Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch mani
 - child session reuse except a master-approved short continuation after timeout;
 - more than three active children;
 - parallel or mixed read/write runs;
-- project-resource inheritance;
+- inheritance of the master's in-memory resource/configuration state;
 - extension/custom tools in children;
 - filesystem/network sandboxing;
 - hidden reasoning persistence.

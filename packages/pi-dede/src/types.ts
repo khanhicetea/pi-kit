@@ -15,6 +15,7 @@ export interface ProfileDefault {
   model?: string;
   thinking?: ThinkingLevel;
   env?: Record<string, string>;
+  additionalArgs?: string[];
 }
 
 export type ProfileDefaults = Partial<Record<DedeProfile, ProfileDefault>>;
@@ -54,6 +55,7 @@ export interface ResolvedAgent {
   systemPrompt?: string;
   toolPreset: ToolPreset;
   tools: BuiltinTool[];
+  additionalArgs: string[];
   model: string;
   thinking: ThinkingLevel;
   env: Record<string, string>;
@@ -130,7 +132,7 @@ export interface ValidationContext {
   model?: ModelLike;
   models: ModelLike[];
   extensionProviderIds?: readonly string[];
-  extensionProvidersAvailableToChild?: boolean;
+  additionalArgs?: readonly string[];
   profileDefaults?: ProfileDefaults;
   resumeLookup?: (handle: string) => ResumeSource | undefined;
 }

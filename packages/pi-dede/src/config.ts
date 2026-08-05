@@ -57,7 +57,7 @@ function parseConfig(content: string, path: string): DedeConfigFile {
     const value = parsed.profiles[profile];
     if (value === undefined) continue;
     if (!isRecord(value)) throw new Error(`${path}.profiles.${profile} must be an object`);
-    assertKnownKeys(value, ["model", "thinking", "env"], `${path}.profiles.${profile}`);
+    assertKnownKeys(value, ["model", "thinking", "env", "additionalArgs"], `${path}.profiles.${profile}`);
 
     if (value.model !== undefined && (typeof value.model !== "string" || value.model.trim().length === 0)) {
       throw new Error(`${path}.profiles.${profile}.model must be a non-empty string`);
@@ -69,10 +69,17 @@ function parseConfig(content: string, path: string): DedeConfigFile {
     const env = value.env === undefined
       ? undefined
       : validateChildEnv(value.env, `${path}.profiles.${profile}.env`);
+    if (value.additionalArgs !== undefined) {
+      if (!Array.isArray(value.additionalArgs)) throw new Error(`${path}.profiles.${profile}.additionalArgs must be an array`);
+      for (const [index, arg] of value.additionalArgs.entries()) {
+        if (typeof arg !== "string") throw new Error(`${path}.profiles.${profile}.additionalArgs[${index}] must be a string`);
+      }
+    }
     profiles[profile] = {
       ...(typeof value.model === "string" ? { model: value.model.trim() } : {}),
       ...(value.thinking !== undefined ? { thinking: value.thinking as ThinkingLevel } : {}),
       ...(env !== undefined ? { env } : {}),
+      ...(value.additionalArgs !== undefined ? { additionalArgs: [...value.additionalArgs] } : {}),
     };
   }
   return {
@@ -101,7 +108,7 @@ function mergeProfileDefaults(globalDefaults: ProfileDefaults = {}, projectDefau
       ...projectValue,
       ...(Object.keys(env).length > 0 ? { env } : {}),
     };
-    if (value.model !== undefined || value.thinking !== undefined || value.env !== undefined) merged[profile] = value;
+    if (value.model !== undefined || value.thinking !== undefined || value.env !== undefined || value.additionalArgs !== undefined) merged[profile] = value;
   }
   return merged;
 }

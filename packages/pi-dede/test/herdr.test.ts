@@ -2,7 +2,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { isInsideHerdr } from "../src/herdr.ts";
+import { createHerdrLayout, isInsideHerdr } from "../src/herdr.ts";
 import { ArtifactManager, ChildProcessManager, runChild } from "../src/runner.ts";
 import type { ResolvedAgent } from "../src/types.ts";
 
@@ -24,6 +24,7 @@ afterEach(() => {
   delete process.env.DEDE_HERDR_LOG;
   delete process.env.DEDE_HANG;
   delete process.env.DEDE_HERDR_PANE_OUTPUT;
+  delete process.env.DEDE_HERDR_NEXT_PANE;
 });
 
 const agent: ResolvedAgent = {
@@ -32,6 +33,7 @@ const agent: ResolvedAgent = {
   goal: "inspect",
   toolPreset: "none",
   tools: [],
+  additionalArgs: [],
   model: "fake/model",
   thinking: "low",
   env: {},
@@ -46,7 +48,7 @@ describe("Herdr child transport", () => {
     expect(isInsideHerdr({ HERDR_PANE_ID: "w1:p1" })).toBe(false);
   });
 
-  it("runs the existing JSON child protocol through a Herdr tab", async () => {
+  it("runs the existing JSON child protocol through a Herdr child pane", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-herdr-"));
     const fakePi = join(directory, "fake-pi.mjs");
     const fakeHerdr = join(directory, "fake-herdr.mjs");
@@ -64,22 +66,22 @@ describe("Herdr child transport", () => {
         console.log(JSON.stringify({ type: "tool_execution_start", toolCallId: "read-1", toolName: "read", args: { path: "src/example.ts", offset: 10, limit: 20 } }));
         console.log(JSON.stringify({ type: "tool_execution_end", toolCallId: "read-1", toolName: "read", isError: false }));
         console.log(JSON.stringify({ type: "message_end", message: {
-          role: "assistant", content: [{ type: "text", text: "## Answer\\n- visible tab result" }],
+          role: "assistant", content: [{ type: "text", text: "## Answer\\n- visible pane result" }],
           provider: "fake", model: "model", timestamp: Date.now(), stopReason: "stop", usage
         }}));
         console.log(JSON.stringify({ type: "agent_end" }));
       `),
       writeFile(fakeHerdr, `#!/usr/bin/env node
-        import { appendFileSync, openSync } from "node:fs";
+        import { appendFileSync, openSync, readFileSync } from "node:fs";
         import { spawn } from "node:child_process";
         const args = process.argv.slice(2);
         appendFileSync(process.env.DEDE_HERDR_LOG, JSON.stringify(args) + "\\n");
-        if (args[0] === "tab" && args[1] === "create") {
-          console.log(JSON.stringify({ result: {
-            tab: { tab_id: "w1:t2" },
-            root_pane: { pane_id: "w1:p2" }
-          } }));
+        if (args[0] === "pane" && args[1] === "split") {
+          const history = readFileSync(process.env.DEDE_HERDR_LOG, "utf8").trim().split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+          const paneId = "w1:p" + (history.filter((entry) => entry[0] === "pane" && entry[1] === "split").length + 1);
+          console.log(JSON.stringify({ result: { pane: { pane_id: paneId } } }));
         } else if (args[0] === "pane" && args[1] === "run") {
+          const paneId = args[2];
           const output = openSync(process.env.DEDE_HERDR_PANE_OUTPUT, "a");
           const child = spawn("/bin/sh", ["-lc", args[3]], {
             detached: true,
@@ -87,13 +89,15 @@ describe("Herdr child transport", () => {
             env: {
               ...process.env,
               HERDR_ENV: "1",
-              HERDR_PANE_ID: "w1:p2",
-              HERDR_TAB_ID: "w1:t2",
+              HERDR_PANE_ID: paneId,
+              HERDR_TAB_ID: "w1:t1",
               HERDR_WORKSPACE_ID: "w1",
             },
           });
           child.unref();
-          console.log(JSON.stringify({ result: { pane_id: "w1:p2" } }));
+          console.log(JSON.stringify({ result: { pane_id: paneId } }));
+        } else if (args[0] === "pane" && args[1] === "close") {
+          console.log(JSON.stringify({ result: {} }));
         } else {
           console.log(JSON.stringify({ result: {} }));
         }
@@ -130,20 +134,38 @@ describe("Herdr child transport", () => {
 
       expect(result).toMatchObject({
         status: "succeeded",
-        finalText: "## Answer\n- visible tab result",
+        finalText: "## Answer\n- visible pane result",
         exitCode: 0,
       });
       const commands = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-      const create = commands.find((args) => args[0] === "tab" && args[1] === "create");
-      expect(create).toEqual([
-        "tab", "create", "--workspace", "w1", "--cwd", directory,
-        "--label", "đệ pane-scout", "--no-focus",
+      const horizontalSplit = commands.find((args) =>
+        args[0] === "pane" && args[1] === "split" && args.includes("down"),
+      );
+      expect(horizontalSplit).toEqual([
+        "pane", "split", "w1:p1", "--direction", "down", "--cwd", directory, "--no-focus",
       ]);
-      expect(commands.some((args) => args[0] === "pane" && args[1] === "split")).toBe(false);
-      expect(commands.some((args) => args[0] === "pane" && args[1] === "run")).toBe(true);
+      expect(commands.some((args) => args[0] === "tab" && args[1] === "create")).toBe(false);
+      expect(commands.some((args) =>
+        args[0] === "pane" && args[1] === "split" && args.includes("right"),
+      )).toBe(false);
+      expect(commands.some((args) => args[0] === "pane" && args[1] === "run" && args[2] === "w1:p2")).toBe(true);
       const paneOutput = await readFile(paneOutputPath, "utf8");
       expect(paneOutput).toContain("→ read src/example.ts:10-29");
       expect(paneOutput.match(/read src\/example\.ts/g)).toHaveLength(1);
+
+      const layout = createHerdrLayout(directory, 2);
+      expect(layout).toBeDefined();
+      const firstPane = await layout!.allocate();
+      expect(firstPane?.paneId).toBe("w1:p3");
+      await firstPane?.release();
+      const secondPane = await layout!.allocate();
+      expect(secondPane?.paneId).toBe("w1:p4");
+      const layoutCommands = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(layoutCommands.some((args) =>
+        args[0] === "pane" && args[1] === "split" && args.includes("right"),
+      )).toBe(true);
+      await secondPane?.release();
+      await firstPane?.release();
 
       process.env.DEDE_HANG = "1";
       const timedOut = await runChild({

@@ -43,11 +43,8 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
     "--session-dir", options.sessionDirectory,
     "--session", options.sessionPath,
     "--no-approve",
-    "--no-extensions",
-    "--no-skills",
     "--no-prompt-templates",
     "--no-themes",
-    "--no-context-files",
     "--system-prompt", "You are an isolated delegated Pi sub-agent.",
     "--append-system-prompt", options.systemPromptPath,
   ];

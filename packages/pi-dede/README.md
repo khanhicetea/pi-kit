@@ -55,8 +55,8 @@ The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads 
 - Throttled TUI progress with elapsed/deadline display
 - Nested usage accounting and process-tree cancellation
 - Per-turn settled summary of subagent count and cost grouped by model ID
-- Automatic live child tabs when the master runs inside Herdr
-- Child resource discovery disabled
+- Automatic live child panes when the master runs inside Herdr
+- Explicit prompt-template and theme discovery disabled; other child resources follow Pi defaults
 
 ## Install
 
@@ -74,13 +74,13 @@ npm run check
 pi -e ./src/index.ts
 ```
 
-## Herdr tabs
+## Herdr panes
 
-When the master Pi process has `HERDR_ENV=1` and a `HERDR_PANE_ID`, `pi-dede` automatically opens each running child in a sibling [Herdr](https://herdr.dev/docs/agent-automation/) tab. The tab shows concise tool activity and the final answer while the normal structured JSON protocol continues to feed the master. It closes when the child finishes or is cancelled.
+When the master Pi process has `HERDR_ENV=1` and a `HERDR_PANE_ID`, `pi-dede` creates one temporary horizontal split below the master pane, then adds each child as a vertical split in that row. Each pane shows concise tool activity and the final answer while the normal structured JSON protocol continues to feed the master. Child panes close when their child finishes or is cancelled, returning the layout to the master pane.
 
-No configuration is required. If Herdr is unavailable or tab setup fails before the child command is accepted, `pi-dede` safely falls back to its normal direct child process. It never retries directly after Herdr has accepted a command, avoiding duplicate mutation work.
+No configuration is required. If Herdr is unavailable or pane setup fails before the child command is accepted, `pi-dede` safely falls back to its normal direct child process. It never retries directly after Herdr has accepted a command, avoiding duplicate mutation work.
 
-The integration uses `herdr tab create` and `herdr pane run`, rather than `herdr agent start`, because delegated Pi children remain non-interactive `--mode json --print` processes. Timeouts, Esc cancellation, usage accounting, persistent child sessions, and short resume behavior are unchanged.
+The integration uses `herdr pane split` and `herdr pane run`, rather than `herdr tab create` or `herdr agent start`, because delegated Pi children remain non-interactive `--mode json --print` processes. The first split uses `--direction down` (horizontal); additional child splits use `--direction right` (vertical). Timeouts, Esc cancellation, usage accounting, persistent child sessions, and short resume behavior are unchanged.
 
 ## Evidence fan-out
 
@@ -184,7 +184,8 @@ Persistent profile model, thinking, and environment overrides—and extra child 
     "scout": {
       "model": "anthropic/claude-haiku-4-5",
       "thinking": "low",
-      "env": { "CHILD_MODE": "inspect" }
+      "env": { "CHILD_MODE": "inspect" },
+      "additionalArgs": ["-e", "/absolute/path/to/scout-extension.ts"]
     },
     "reviewer": { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium" },
     "worker": { "model": "openai-codex/gpt-5.3-codex", "thinking": "medium" },
@@ -193,7 +194,7 @@ Persistent profile model, thinking, and environment overrides—and extra child 
 }
 ```
 
-`additionalArgs` is inserted into every child command after pi-dede's built-in options and before the task prompt. This permits options such as `-e /absolute/path/to/child-extension.ts`; because arguments are appended after `--no-extensions`, an explicit extension can be loaded while normal extension discovery remains disabled. A trusted project's `additionalArgs` array replaces the global array.
+`additionalArgs` is inserted into every child command after pi-dede's built-in options and before the task prompt. The top-level list is shared by all profiles. If `profiles.<profile>.additionalArgs` is present, it replaces the shared list for that profile, including when it is an empty array. A trusted project's top-level `additionalArgs` array replaces the global array; profile fields override the corresponding global profile fields.
 
 Project values override global model/thinking fields and merge environment values by variable name. Per-agent values then override configured environment values. The complete child environment precedence is inherited master process environment, global profile environment, trusted-project profile environment, per-agent environment, then pi-dede's internal control variables.
 
@@ -225,9 +226,9 @@ Children do not inherit the master's loaded extensions. To use an extension-regi
 
 ## Security and isolation
 
-Children run as separate `pi --mode json --print` processes with extension, skill, template, theme, and context-file discovery disabled unless explicitly changed through configured `additionalArgs`. Inside Herdr, a private supervisor launches the same command in a temporary sibling tab and spools its exact JSON output back to the extension; outside Herdr, the command is spawned directly. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts and Herdr launch manifests are mode-`0600` temporary files rather than command-line text.
+Children run as separate `pi --mode json --print` processes. They retain Pi's normal extension, skill, and context-file discovery, while prompt-template and theme discovery remain disabled by pi-dede's built-in flags; configured shared or profile `additionalArgs` can explicitly alter this setup. Inside Herdr, a private supervisor launches the same command in a temporary split pane and spools its exact JSON output back to the extension; outside Herdr, the command is spawned directly. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts and Herdr launch manifests are mode-`0600` temporary files rather than command-line text.
 
-Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. `AGENTS.md`, skills, and project instructions are not inherited, so pass only the relevant trusted rules in `sharedContext`.
+Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. Discovered context files and skills may affect the child, so use `sharedContext` and `additionalArgs` to control the child configuration explicitly.
 
 See [SPEC.md](./SPEC.md) for the complete v0.2 contract.
 

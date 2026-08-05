@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadDedeConfig } from "./config.ts";
+import { createHerdrLayout } from "./herdr.ts";
 import { buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
 import { aggregateUsages } from "./json-events.ts";
 import { cloneDetails, deriveStatus, formatModelContent, formatSettledSummary, progressContent, zeroUsage } from "./output.ts";
@@ -36,10 +37,6 @@ function queuedResult(agent: ResolvedAgent): DedeChildResult {
 function sessionId(ctx: ExtensionContext): string {
   const manager = ctx.sessionManager as unknown as { getSessionId?: () => string };
   return manager.getSessionId?.() ?? process.env.PI_SESSION_ID ?? "ephemeral";
-}
-
-function explicitlyLoadsChildExtension(args: readonly string[]): boolean {
-  return args.some((arg) => arg === "-e" || arg === "--extension" || arg.startsWith("--extension="));
 }
 
 export default function dedeExtension(pi: ExtensionAPI): void {
@@ -118,12 +115,13 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         model: ctx.model,
         models: ctx.modelRegistry.getAll(),
         extensionProviderIds: ctx.modelRegistry.getRegisteredProviderIds(),
-        extensionProvidersAvailableToChild: explicitlyLoadsChildExtension(config.additionalArgs),
+        additionalArgs: config.additionalArgs,
         profileDefaults,
         resumeLookup: (handle) => resumeStore!.peek(handle),
       });
 
       const runId = randomUUID();
+      const herdrLayout = createHerdrLayout(ctx.cwd, agents.length);
       const startedAt = Date.now();
       const details: DedeToolDetails = {
         version: 2,
@@ -232,7 +230,8 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               isResume: agent.resume !== undefined,
               runId,
               parentSessionId,
-              additionalArgs: config.additionalArgs,
+              additionalArgs: agent.additionalArgs,
+              herdrLayout,
               timeoutSeconds: agent.timeoutSeconds,
               signal: combinedSignal,
               manager: processManager,
@@ -339,6 +338,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         clearInterval(heartbeat);
         if (pendingEmit) clearTimeout(pendingEmit);
         if (claimedResume && !claimedResumeHandled) resumeStore!.release(claimedResume.handle);
+        await herdrLayout?.dispose();
         if (runDirectory) {
           runDirectories.delete(runDirectory);
           await removeRunDirectory(runDirectory);

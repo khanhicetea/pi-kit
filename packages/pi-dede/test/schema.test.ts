@@ -85,8 +85,10 @@ describe("semantic validation", () => {
   it("applies profile defaults below explicit fields and above built-in defaults", () => {
     const defaults: ValidationContext = {
       ...context,
+      additionalArgs: ["--shared-child-arg"],
       profileDefaults: {
-        scout: { model: "other/small", thinking: "minimal", env: { CONFIG_ONLY: "yes", SHARED: "config" } },
+        scout: { model: "other/small", thinking: "minimal", env: { CONFIG_ONLY: "yes", SHARED: "config" }, additionalArgs: ["-e", "/scout/ext.ts"] },
+        reviewer: { additionalArgs: [] },
       },
     };
 
@@ -95,7 +97,14 @@ describe("semantic validation", () => {
       model: "other/small",
       thinking: "minimal",
       env: { CONFIG_ONLY: "yes", SHARED: "config" },
+      additionalArgs: ["-e", "/scout/ext.ts"],
     });
+
+    const [shared] = validateAndResolve(valid({ agents: [{ id: "a", profile: "custom", goal: "x" }] }), defaults);
+    expect(shared.additionalArgs).toEqual(["--shared-child-arg"]);
+
+    const [emptyOverride] = validateAndResolve(valid({ agents: [{ id: "a", profile: "reviewer", goal: "x" }] }), defaults);
+    expect(emptyOverride.additionalArgs).toEqual([]);
 
     const [explicit] = validateAndResolve(valid({ agents: [{
       id: "a",
@@ -109,6 +118,7 @@ describe("semantic validation", () => {
       model: "test/main",
       thinking: "high",
       env: { CONFIG_ONLY: "yes", REQUEST_ONLY: "yes", SHARED: "request" },
+      additionalArgs: ["-e", "/scout/ext.ts"],
     });
   });
 
@@ -261,7 +271,7 @@ describe("semantic validation", () => {
     }), {
       ...context,
       extensionProviderIds: ["other"],
-      extensionProvidersAvailableToChild: true,
+      profileDefaults: { custom: { additionalArgs: ["-e", "/tmp/provider-extension.ts"] } },
     });
     expect(agent.model).toBe("other/small");
   });

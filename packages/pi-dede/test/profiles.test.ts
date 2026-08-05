@@ -9,6 +9,7 @@ const worker: ResolvedAgent = {
   systemPrompt: "Follow the supplied API contract.",
   toolPreset: "coding",
   tools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+  additionalArgs: [],
   model: "test/model",
   thinking: "medium",
   env: {},

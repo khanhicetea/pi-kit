@@ -47,7 +47,7 @@ const AgentSchema = Type.Object(
     systemPrompt: Type.Optional(Type.String({
       description: "Additional role constraints for a narrow custom specialty; project rules belong in sharedContext.",
     })),
-    toolPreset: Type.Optional(StringEnum(TOOL_PRESETS)),
+    toolPreset: Type.Optional(StringEnum(TOOL_PRESETS, {description: "Use custom when using specific tools param"})),
     tools: Type.Optional(Type.Array(StringEnum(BUILTIN_TOOLS), { maxItems: 7 })),
     model: Type.Optional(Type.String({ minLength: 1 })),
     thinking: Type.Optional(StringEnum(THINKING_LEVELS)),
@@ -164,6 +164,10 @@ export function resolveModelPattern(pattern: string, models: ModelLike[]): Model
   return preferModel(candidates.filter((model) => model.id.toLowerCase().includes(needle) || model.name?.toLowerCase().includes(needle)));
 }
 
+function explicitlyLoadsChildExtension(args: readonly string[]): boolean {
+  return args.some((arg) => arg === "-e" || arg === "--extension" || arg.startsWith("--extension="));
+}
+
 function compatibleModelHint(models: readonly ModelLike[], extensionProviders: ReadonlySet<string>): string {
   const candidates = models
     .filter((model) => !extensionProviders.has(model.provider))
@@ -260,6 +264,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     }
 
     const profileDefaults = context.profileDefaults?.[profile];
+    const additionalArgs = profileDefaults?.additionalArgs ?? context.additionalArgs ?? [];
     const configuredEnv = profileDefaults?.env === undefined
       ? {}
       : validateChildEnv(profileDefaults.env, `profiles.${profile}.env`);
@@ -268,7 +273,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     const modelPattern = agent.model ?? profileDefaults?.model;
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
-    if (extensionProviders.has(model.provider) && !context.extensionProvidersAvailableToChild) {
+    if (extensionProviders.has(model.provider) && !explicitlyLoadsChildExtension(additionalArgs)) {
       throw new Error(
         `Model provider ${model.provider} is registered by an extension that is not loaded in isolated children. ` +
         `Load its extension explicitly with additionalArgs: ["-e", "/absolute/path/to/extension.ts"], ` +
@@ -284,6 +289,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
       systemPrompt: agent.systemPrompt,
       toolPreset,
       tools,
+      additionalArgs: [...additionalArgs],
       model: `${model.provider}/${model.id}`,
       thinking: agent.thinking ?? profileDefaults?.thinking ?? PROFILE_DEFAULT_THINKING[profile],
       env,

@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { tryLaunchHerdrChild, type HerdrChild } from "./herdr.ts";
+import { tryLaunchHerdrChild, type HerdrChild, type HerdrLayout } from "./herdr.ts";
 import { buildChildInvocation } from "./invocation.ts";
 import { childUsage, PiJsonCollector, type CollectedProtocol } from "./json-events.ts";
 import type { DedeChildResult, ResolvedAgent } from "./types.ts";
@@ -55,7 +55,7 @@ function isHerdrChild(child: ManagedChild): child is HerdrChild {
   return "completion" in child && "signal" in child;
 }
 
-/** Tracks complete process groups and Herdr tab children for cancellation and session shutdown. */
+/** Tracks complete process groups and Herdr pane children for cancellation and session shutdown. */
 export class ChildProcessManager {
   private readonly tracked = new Set<TrackedProcess>();
 
@@ -140,6 +140,7 @@ export interface RunChildOptions {
   runId: string;
   parentSessionId: string;
   additionalArgs?: readonly string[];
+  herdrLayout?: HerdrLayout;
   timeoutSeconds: number;
   signal?: AbortSignal;
   manager: ChildProcessManager;
@@ -180,6 +181,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     onStdout: (chunk) => collector.push(chunk),
     onStderr: collectStderr,
     signal: options.signal,
+    layout: options.herdrLayout,
   });
 
   if (herdrChild) {

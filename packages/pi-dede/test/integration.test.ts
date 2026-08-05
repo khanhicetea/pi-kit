@@ -20,6 +20,7 @@ const agent: ResolvedAgent = {
   goal: "inspect",
   toolPreset: "read-only",
   tools: ["read", "grep", "find", "ls"],
+  additionalArgs: [],
   model: "fake/model",
   thinking: "low",
   env: {},

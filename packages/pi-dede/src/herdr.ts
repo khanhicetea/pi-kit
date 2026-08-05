@@ -30,6 +30,12 @@ export interface HerdrChild {
   signal(signal: NodeJS.Signals): Promise<void>;
 }
 
+export interface HerdrPaneLease {
+  readonly paneId: string;
+  readonly tabId: string;
+  release(): Promise<void>;
+}
+
 export interface LaunchHerdrOptions {
   invocation: PiInvocation;
   cwd: string;
@@ -38,6 +44,7 @@ export interface LaunchHerdrOptions {
   onStdout: (chunk: Buffer) => void;
   onStderr: (chunk: Buffer) => void;
   signal?: AbortSignal;
+  layout?: HerdrLayout;
 }
 
 function tail(current: string, incoming: Buffer): string {
@@ -83,23 +90,155 @@ async function runCli(command: string, args: string[], timeoutMs = 5000, signal?
   });
 }
 
-function parseCreatedTab(stdout: string): { tabId: string; paneId: string } | undefined {
+function parseCreatedPane(stdout: string): string | undefined {
   try {
-    const value = JSON.parse(stdout) as {
-      result?: {
-        tab?: { tab_id?: unknown };
-        root_pane?: { pane_id?: unknown };
-      };
-    };
-    const tabId = value.result?.tab?.tab_id;
-    const paneId = value.result?.root_pane?.pane_id;
-    return typeof tabId === "string" && tabId.length > 0
-      && typeof paneId === "string" && paneId.length > 0
-      ? { tabId, paneId }
-      : undefined;
+    const value = JSON.parse(stdout) as { result?: { pane?: { pane_id?: unknown } } };
+    const paneId = value.result?.pane?.pane_id;
+    return typeof paneId === "string" && paneId.length > 0 ? paneId : undefined;
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Owns the temporary child-pane layout for one delegation call. The first
+ * split is horizontal (down) below the master pane; subsequent splits extend
+ * the child row vertically (right) so every child gets its own pane.
+ */
+export class HerdrLayout {
+  private operation = Promise.resolve();
+  private basePaneId: string | undefined;
+  private readonly allocatedPanes: string[] = [];
+  private readonly releasedPanes = new Set<string>();
+  private unavailable = false;
+  private disposed = false;
+  private attemptedAllocations = 0;
+
+  constructor(
+    private readonly cli: string,
+    private readonly masterPaneId: string,
+    readonly tabId: string,
+    private readonly cwd?: string,
+    private readonly expectedChildren = 0,
+  ) {}
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.operation.then(operation, operation);
+    this.operation = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async ensureBase(signal?: AbortSignal): Promise<boolean> {
+    if (this.basePaneId) return true;
+    if (this.unavailable) return false;
+
+    const split = await runCli(
+      this.cli,
+      [
+        "pane", "split", this.masterPaneId,
+        "--direction", "down",
+        ...(this.cwd ? ["--cwd", this.cwd] : []),
+        "--no-focus",
+      ],
+      5000,
+      signal,
+    );
+    const paneId = split.code === 0 ? parseCreatedPane(split.stdout) : undefined;
+    if (!paneId) {
+      this.unavailable = true;
+      return false;
+    }
+    this.basePaneId = paneId;
+    return true;
+  }
+
+  private async flushReleased(): Promise<void> {
+    if (this.attemptedAllocations < this.expectedChildren) return;
+    for (const paneId of this.releasedPanes) {
+      const index = this.allocatedPanes.indexOf(paneId);
+      if (index < 0) continue;
+      this.allocatedPanes.splice(index, 1);
+      await runCli(this.cli, ["pane", "close", paneId], 2000);
+    }
+    this.releasedPanes.clear();
+    if (this.allocatedPanes.length === 0) this.basePaneId = undefined;
+  }
+
+  async allocate(signal?: AbortSignal): Promise<HerdrPaneLease | undefined> {
+    return await this.enqueue(async () => {
+      if (this.disposed) return undefined;
+      this.attemptedAllocations++;
+      if (!(await this.ensureBase(signal))) {
+        await this.flushReleased();
+        return undefined;
+      }
+
+      let paneId = this.basePaneId!;
+      const targetPaneId = this.allocatedPanes.at(-1);
+      if (targetPaneId) {
+        const split = await runCli(
+          this.cli,
+          [
+            "pane", "split", targetPaneId,
+            "--direction", "right",
+            ...(this.cwd ? ["--cwd", this.cwd] : []),
+            "--no-focus",
+          ],
+          5000,
+          signal,
+        );
+        paneId = split.code === 0 ? parseCreatedPane(split.stdout) ?? "" : "";
+        if (!paneId) {
+          await this.flushReleased();
+          return undefined;
+        }
+      }
+
+      this.allocatedPanes.push(paneId);
+      await this.flushReleased();
+      let released = false;
+      return {
+        paneId,
+        tabId: this.tabId,
+        release: async () => {
+          if (released) return;
+          released = true;
+          await this.release(paneId);
+        },
+      };
+    });
+  }
+
+  private async release(paneId: string): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.allocatedPanes.includes(paneId)) return;
+      this.releasedPanes.add(paneId);
+      await this.flushReleased();
+    });
+  }
+
+  async dispose(): Promise<void> {
+    await this.enqueue(async () => {
+      this.disposed = true;
+      for (const paneId of this.allocatedPanes) {
+        await runCli(this.cli, ["pane", "close", paneId], 2000);
+      }
+      this.allocatedPanes.length = 0;
+      this.releasedPanes.clear();
+      this.basePaneId = undefined;
+    });
+  }
+}
+
+export function createHerdrLayout(cwd?: string, expectedChildren = 0): HerdrLayout | undefined {
+  if (!isInsideHerdr()) return undefined;
+  return new HerdrLayout(
+    herdrCommand(),
+    process.env.HERDR_PANE_ID!.trim(),
+    process.env.HERDR_TAB_ID?.trim() ?? "",
+    cwd,
+    expectedChildren,
+  );
 }
 
 function shellQuote(value: string): string {
@@ -140,15 +279,14 @@ async function readNewBytes(path: string, offset: number, consume: (chunk: Buffe
   }
 }
 
-class TabChild implements HerdrChild {
+class PaneChild implements HerdrChild {
   readonly completion: Promise<HerdrCompletion>;
   readonly closed: Promise<void>;
   private complete!: (value: HerdrCompletion) => void;
   private done = false;
 
   constructor(
-    readonly paneId: string,
-    readonly tabId: string,
+    private readonly lease: HerdrPaneLease,
     private readonly cli: string,
     private readonly stdoutPath: string,
     private readonly stderrPath: string,
@@ -162,6 +300,14 @@ class TabChild implements HerdrChild {
     void this.poll();
   }
 
+  get paneId(): string {
+    return this.lease.paneId;
+  }
+
+  get tabId(): string {
+    return this.lease.tabId;
+  }
+
   private async poll(): Promise<void> {
     let stdoutOffset = 0;
     let stderrOffset = 0;
@@ -173,7 +319,6 @@ class TabChild implements HerdrChild {
         stdoutOffset = await readNewBytes(this.stdoutPath, stdoutOffset, this.onStdout);
         stderrOffset = await readNewBytes(this.stderrPath, stderrOffset, this.onStderr);
         this.finish(completion);
-        void runCli(this.cli, ["tab", "close", this.tabId]);
         return;
       } catch { /* supervisor is still running */ }
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
@@ -184,6 +329,7 @@ class TabChild implements HerdrChild {
     if (this.done) return;
     this.done = true;
     this.complete(value);
+    void this.lease.release();
   }
 
   async signal(signal: NodeJS.Signals): Promise<void> {
@@ -195,34 +341,32 @@ class TabChild implements HerdrChild {
     }
 
     // Give the supervisor time to observe SIGKILL and kill the detached process
-    // group. Closing the tab first could orphan that group.
+    // group. Closing the pane first could orphan that group.
     await Promise.race([
       this.completion,
       new Promise((resolve) => setTimeout(resolve, 1000)),
     ]);
     if (!this.done) {
-      await runCli(this.cli, ["tab", "close", this.tabId], 2000);
-      this.finish({ signal, error: "Herdr tab did not report completion after forced cancellation" });
+      await this.lease.release();
+      this.finish({ signal, error: "Herdr pane did not report completion after forced cancellation" });
     }
   }
 }
 
 /**
- * Start a child in a sibling Herdr tab. Returns undefined only when setup failed
- * before Herdr accepted the tab command, allowing the caller to safely fall back.
+ * Start a child in a temporary pane below the master. The first child creates
+ * the horizontal split; later children use vertical splits in that row.
+ * Returns undefined only when Herdr setup failed, allowing a safe direct
+ * process fallback before the pane command has been accepted.
  */
 export async function tryLaunchHerdrChild(options: LaunchHerdrOptions): Promise<HerdrChild | undefined> {
   if (!isInsideHerdr()) return undefined;
 
   const cli = herdrCommand();
-  const createArgs = ["tab", "create"];
-  const workspaceId = process.env.HERDR_WORKSPACE_ID?.trim();
-  if (workspaceId) createArgs.push("--workspace", workspaceId);
-  createArgs.push("--cwd", options.cwd, "--label", `đệ ${options.label}`, "--no-focus");
-  const created = await runCli(cli, createArgs, 5000, options.signal);
-  const tab = created.code === 0 ? parseCreatedTab(created.stdout) : undefined;
-  if (!tab) return undefined;
-  const { tabId, paneId } = tab;
+  const layout = options.layout ?? createHerdrLayout(options.cwd, 1);
+  const lease = await layout?.allocate(options.signal);
+  if (!lease) return undefined;
+  const paneId = lease.paneId;
 
   const prefix = `herdr-${options.label.replace(/[^a-zA-Z0-9-]/g, "_")}`;
   const manifestPath = join(options.privateDirectory, `${prefix}.json`);
@@ -254,7 +398,7 @@ export async function tryLaunchHerdrChild(options: LaunchHerdrOptions): Promise<
     ]);
     await chmod(manifestPath, 0o600);
   } catch {
-    await runCli(cli, ["tab", "close", tabId], 2000);
+    await lease.release();
     return undefined;
   }
 
@@ -262,15 +406,14 @@ export async function tryLaunchHerdrChild(options: LaunchHerdrOptions): Promise<
   const dispatched = await runCli(cli, ["pane", "run", paneId, terminalCommand], 5000, options.signal);
   if (dispatched.code !== 0 && (!dispatched.error || dispatched.spawnFailed)) {
     // A definitive CLI rejection means the command did not start, so fallback is safe.
-    await runCli(cli, ["tab", "close", tabId], 2000);
+    await lease.release();
     return undefined;
   }
   // A timeout or transport error is ambiguous: Herdr may already have accepted the
-  // command. Track the tab instead of falling back and risking duplicate work.
+  // command. Track the pane instead of falling back and risking duplicate work.
 
-  return new TabChild(
-    paneId,
-    tabId,
+  return new PaneChild(
+    lease,
     cli,
     stdoutPath,
     stderrPath,
