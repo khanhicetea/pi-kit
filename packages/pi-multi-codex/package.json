@@ -1,6 +1,6 @@
 {
   "name": "@khanhicetea/pi-multi-codex",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Pi extension for logging into and switching between multiple OpenAI Codex accounts",
   "type": "module",
   "license": "MIT",
