@@ -75,7 +75,13 @@ export interface CollectedProtocol {
   oversizedLines: number;
 }
 
-/** Bounded JSONL collector for Pi's print/json event stream. */
+/** Bounded JSONL collector for Pi's event stream (json or rpc mode).
+ *
+ * `onProgress` receives human-readable activity hints; `onEvent` receives every
+ * successfully-parsed event object, including protocol-control messages the
+ * collector itself ignores (e.g. rpc `response`, `agent_settled`,
+ * `extension_ui_request`). The collector keeps the authoritative state; callers
+ * use `onEvent` only for transport control. */
 export class PiJsonCollector {
   private readonly decoder = new StringDecoder("utf8");
   private buffer = "";
@@ -92,7 +98,10 @@ export class PiJsonCollector {
     oversizedLines: 0,
   };
 
-  constructor(private readonly onProgress?: (text: string) => void) {}
+  constructor(
+    private readonly onProgress?: (text: string) => void,
+    private readonly onEvent?: (event: Record<string, any>) => void,
+  ) {}
 
   push(chunk: Buffer | string): void {
     this.consume(typeof chunk === "string" ? chunk : this.decoder.write(chunk));
@@ -244,6 +253,11 @@ export class PiJsonCollector {
         this.onProgress?.("context compacting");
         break;
     }
+
+    // Notify transport observers after state is updated. Ignored event types
+    // (rpc `response`, `agent_settled`, `extension_ui_request`, `queue_update`,
+    // ...) still pass through so the RPC controller can react to them.
+    this.onEvent?.(event);
   }
 
   private addActivity(type: DedeActivity["type"], text: string): void {

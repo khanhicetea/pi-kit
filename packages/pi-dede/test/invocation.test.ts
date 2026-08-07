@@ -18,7 +18,6 @@ const agent = (tools: ResolvedAgent["tools"]): ResolvedAgent => ({
 
 const invocationOptions = {
   systemPromptPath: "/tmp/run/scout-system.md",
-  taskPath: "/tmp/run/scout-task.md",
   sessionDirectory: "/tmp/pi-dede-sessions",
   sessionPath: "/tmp/pi-dede-sessions/child.jsonl",
   childSessionId: "11111111-1111-4111-8111-111111111111",
@@ -27,23 +26,27 @@ const invocationOptions = {
 };
 
 describe("child invocation", () => {
-  it("builds an isolated read-only command with a private resumable session", () => {
+  it("builds an isolated headless RPC command with a private resumable session", () => {
     const invocation = buildChildInvocation({
       agent: agent(["read", "grep", "find", "ls"]),
       ...invocationOptions,
       baseEnv: { PATH: process.env.PATH, PI_SESSION_ID: "secret-session", PI_SESSION_FILE: "/secret/file" },
     });
     const args = invocation.args.join(" ");
-    expect(args).toContain("--mode json --print --session-dir /tmp/pi-dede-sessions --session /tmp/pi-dede-sessions/child.jsonl");
+    expect(args).toContain("--mode rpc --session-dir /tmp/pi-dede-sessions --session /tmp/pi-dede-sessions/child.jsonl");
     expect(args).toContain("--no-approve --no-prompt-templates --no-themes");
+    expect(args).not.toContain("--mode json");
+    expect(args).not.toContain("--print");
     expect(args).not.toContain("--no-extensions");
     expect(args).not.toContain("--no-skills");
     expect(args).not.toContain("--no-context-files");
     expect(args).not.toContain("--no-session");
     expect(args).toContain("--tools read,grep,find,ls");
     expect(args).toContain("--model test/model --thinking high");
-    expect(args).toContain("@/tmp/run/scout-task.md");
-    expect(args).toContain("Complete the delegated task");
+    expect(args).toContain("--append-system-prompt /tmp/run/scout-system.md");
+    // The task is delivered over the RPC stdin channel, never as an argument.
+    expect(args).not.toContain("@/tmp/run/scout-task.md");
+    expect(args).not.toContain("Complete the delegated task");
     expect(args).not.toContain("SECRET GOAL");
     expect(invocation.env).toMatchObject({
       PI_DEDE_DEPTH: "1",
@@ -82,7 +85,7 @@ describe("child invocation", () => {
     expect(invocation.env.PI_SESSION_FILE).toBeUndefined();
   });
 
-  it("reuses the exact child session for a short resume", () => {
+  it("reuses the exact child session and resume attempt for a short continuation", () => {
     const resumed: ResolvedAgent = {
       ...agent(["read"]),
       resume: {
@@ -92,24 +95,23 @@ describe("child invocation", () => {
       },
       timeoutSeconds: 60,
     };
-    const invocation = buildChildInvocation({ agent: resumed, ...invocationOptions, isResume: true });
+    const invocation = buildChildInvocation({ agent: resumed, ...invocationOptions });
     const args = invocation.args.join(" ");
     expect(args).toContain("--session-dir /tmp/pi-dede-sessions --session /tmp/pi-dede-sessions/child.jsonl");
-    expect(args).toContain("Continue the previous delegated task using the short extension");
     expect(invocation.env.PI_DEDE_RESUME_ATTEMPT).toBe("1");
   });
 
-  it("appends configured CLI args before the child task", () => {
+  it("appends configured CLI args after built-in options as the trailing arguments", () => {
     const invocation = buildChildInvocation({
       agent: agent(["read"]),
       ...invocationOptions,
       additionalArgs: ["-e", "/tmp/custom-extension.ts"],
     });
     const extensionIndex = invocation.args.indexOf("-e");
-    const taskIndex = invocation.args.indexOf(`@${invocationOptions.taskPath}`);
     expect(invocation.args.slice(extensionIndex, extensionIndex + 2)).toEqual(["-e", "/tmp/custom-extension.ts"]);
     expect(extensionIndex).toBeGreaterThan(invocation.args.indexOf("--no-themes"));
-    expect(extensionIndex).toBeLessThan(taskIndex);
+    // additionalArgs are the last arguments; no task message follows them.
+    expect(extensionIndex).toBe(invocation.args.length - 2);
   });
 
   it("uses --no-tools for an empty toolset", () => {

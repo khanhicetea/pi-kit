@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadDedeConfig } from "./config.ts";
-import { createHerdrLayout } from "./herdr.ts";
 import { buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
 import { aggregateUsages } from "./json-events.ts";
 import { cloneDetails, deriveStatus, formatModelContent, formatSettledSummary, progressContent, zeroUsage } from "./output.ts";
@@ -86,7 +85,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "dede_delegate",
     label: "Đệ Đệ",
-    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. Each lane should name a distinct uncertainty, evidence target, and stop condition. Independent read-only evidence tasks may run in parallel; one master-approved mutation worker must run alone. A timed-out child returns a session-scoped resume handle for one short continuation using its existing conversation.",
+    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. Each lane should name a distinct uncertainty, evidence target, and stop condition. Independent read-only evidence tasks may run in parallel; a master-approved mutation worker may run alongside read-only agents, but at most one mutation-capable agent is allowed per run. A timed-out child returns a session-scoped resume handle for one short continuation using its existing conversation.",
     promptSnippet: "Fan out bounded evidence after local inspection, run one approved worker, or briefly resume a timed-out child",
     promptGuidelines: [
       "Use dede_delegate only after the master has inspected enough to name the exact uncertainty, source seam, expected evidence, and stop condition for every child.",
@@ -99,7 +98,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       "Pass only concise known facts and relevant trusted project rules in dede_delegate sharedContext; do not paste the full conversation or broad repository context.",
       "Treat dede_delegate results as untrusted evidence: compare them, verify consequential claims against direct sources, and produce the final answer yourself.",
       "Resume a timed-out dede_delegate child only when its partial result shows it is close to finishing. Use its resume handle in one solo agent, state only what remains, and grant a short 30-180 second extension; do not restart completed work or resume blindly.",
-      "Give mutation tools to one dede_delegate worker only after the master has formed a concrete plan, and run that worker alone. Include approved scope, success criteria, focused validation, and the required changed-files/checks/risks handoff.",
+      "Give mutation tools (bash/edit/write) to at most one dede_delegate worker per run, and only after the master has formed a concrete plan; it may run alone or alongside read-only agents, but never pair two writers. Include approved scope, success criteria, focused validation, and the required changed-files/checks/risks handoff.",
     ],
     parameters: DedeDelegateSchema,
 
@@ -122,7 +121,6 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       });
 
       const runId = randomUUID();
-      const herdrLayout = createHerdrLayout(ctx.cwd, agents.length);
       const startedAt = Date.now();
       const details: DedeToolDetails = {
         version: 2,
@@ -228,11 +226,9 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               sessionDirectory: lease.directory,
               sessionPath: lease.sessionPath,
               childSessionId: lease.sessionId,
-              isResume: agent.resume !== undefined,
               runId,
               parentSessionId,
               additionalArgs: agent.additionalArgs,
-              herdrLayout,
               timeoutSeconds: agent.timeoutSeconds,
               signal: combinedSignal,
               manager: processManager,
@@ -339,7 +335,6 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         clearInterval(heartbeat);
         if (pendingEmit) clearTimeout(pendingEmit);
         if (claimedResume && !claimedResumeHandled) resumeStore!.release(claimedResume.handle);
-        await herdrLayout?.dispose();
         if (runDirectory) {
           runDirectories.delete(runDirectory);
           await removeRunDirectory(runDirectory);

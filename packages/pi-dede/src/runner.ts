@@ -1,14 +1,24 @@
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { chmod, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { spawnSync, type ChildProcess } from "node:child_process";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { tryLaunchHerdrChild, type HerdrChild, type HerdrLayout } from "./herdr.ts";
 import { buildChildInvocation } from "./invocation.ts";
-import { childUsage, PiJsonCollector, type CollectedProtocol } from "./json-events.ts";
+import { RpcChild, type RpcChildOutcome } from "./rpc-child.ts";
+import { childUsage, type CollectedProtocol } from "./json-events.ts";
 import type { DedeChildResult, ResolvedAgent } from "./types.ts";
 
 const STDERR_CAP = 64 * 1024;
 const DETAILS_TEXT_CAP = 32 * 1024;
+
+/** Seconds of warning before the hard deadline. The child is steered to wrap up. */
+const SOFT_TERMINATE_GRACE_MS = 30_000;
+/** Never warn in the very first moments of a short run. */
+const MIN_RUN_BEFORE_WARN_MS = 5_000;
+/** After sending RPC `abort` at the deadline, wait this long for a clean settle
+ * before falling back to process-tree termination. */
+const ABORT_GRACE_MS = 3_000;
+/** After closing stdin, wait this long for the RPC child to exit on EOF. */
+const DISPOSE_CLOSE_MS = 2_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,52 +53,36 @@ function signalTree(proc: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-type ManagedChild = ChildProcess | HerdrChild;
-
 interface TrackedProcess {
-  child: ManagedChild;
+  child: ChildProcess;
   closed: Promise<void>;
-  signal: (signal: NodeJS.Signals) => void | Promise<void>;
 }
 
-function isHerdrChild(child: ManagedChild): child is HerdrChild {
-  return "completion" in child && "signal" in child;
-}
-
-/** Tracks complete process groups and Herdr pane children for cancellation and session shutdown. */
+/** Tracks complete process groups for cancellation and session shutdown. */
 export class ChildProcessManager {
   private readonly tracked = new Set<TrackedProcess>();
 
-  track(child: ManagedChild): () => void {
+  track(child: ChildProcess): () => void {
     let resolveClosed!: () => void;
-    const observedClosed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-    const tracked: TrackedProcess = {
-      child,
-      closed: observedClosed,
-      signal: isHerdrChild(child)
-        ? (signal) => child.signal(signal)
-        : (signal) => signalTree(child, signal),
-    };
+    const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+    const tracked: TrackedProcess = { child, closed };
     this.tracked.add(tracked);
     const finish = () => {
       resolveClosed();
       this.tracked.delete(tracked);
     };
-    if (isHerdrChild(child)) void child.closed.then(finish, finish);
-    else {
-      child.once("close", finish);
-      child.once("error", finish);
-    }
+    child.once("close", finish);
+    child.once("error", finish);
     return finish;
   }
 
-  async terminate(child: ManagedChild): Promise<void> {
+  async terminate(child: ChildProcess): Promise<void> {
     const tracked = [...this.tracked].find((item) => item.child === child);
     if (!tracked) return;
-    await tracked.signal("SIGTERM");
+    signalTree(child, "SIGTERM");
     await Promise.race([tracked.closed, delay(5000)]);
     if (this.tracked.has(tracked)) {
-      await tracked.signal("SIGKILL");
+      signalTree(child, "SIGKILL");
       await Promise.race([tracked.closed, delay(1000)]);
     }
   }
@@ -136,11 +130,9 @@ export interface RunChildOptions {
   sessionDirectory: string;
   sessionPath: string;
   childSessionId: string;
-  isResume?: boolean;
   runId: string;
   parentSessionId: string;
   additionalArgs?: readonly string[];
-  herdrLayout?: HerdrLayout;
   timeoutSeconds: number;
   signal?: AbortSignal;
   manager: ChildProcessManager;
@@ -148,16 +140,27 @@ export interface RunChildOptions {
   onProgress?: (text: string, protocol: CollectedProtocol) => void;
 }
 
+type FinishReason = "settled" | "closed" | "timeout" | "cancelled";
+
+function buildSoftTerminateWarning(remainingSeconds: number): string {
+  return [
+    "⏱ Deadline approaching for this delegation.",
+    `You have about ${remainingSeconds}s left before the run is hard-terminated.`,
+    "Stop exploring and finalize now: produce your bounded answer with the evidence you already have, and do not start new tool calls.",
+    "If you do not finalize in time, the run will be killed and only a short resume of this conversation will remain.",
+  ].join(" ");
+}
+
+/** Run one delegated child over RPC with a steer-then-kill timeout policy. */
 export async function runChild(options: RunChildOptions): Promise<{ result: DedeChildResult; detailedUsage: CollectedProtocol["usage"] }> {
   const startedAt = Date.now();
+  const taskContent = await readFile(options.taskPath, "utf8");
   const invocation = buildChildInvocation({
     agent: options.agent,
     systemPromptPath: options.systemPromptPath,
-    taskPath: options.taskPath,
     sessionDirectory: options.sessionDirectory,
     sessionPath: options.sessionPath,
     childSessionId: options.childSessionId,
-    isResume: options.isResume,
     runId: options.runId,
     parentSessionId: options.parentSessionId,
     additionalArgs: options.additionalArgs,
@@ -166,107 +169,133 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   let stderr = "";
   let timedOut = false;
   let cancelled = false;
-  let spawnError: string | undefined;
-  const collector = new PiJsonCollector((text) => options.onProgress?.(text, collector.snapshot()));
+  let warned = false;
+  let outcome: RpcChildOutcome | undefined;
   const collectStderr = (chunk: Buffer) => {
     stderr = tailUtf8(stderr, chunk.toString("utf8"), STDERR_CAP);
   };
 
-  let child: ManagedChild;
-  const herdrChild = await tryLaunchHerdrChild({
+  const child = new RpcChild({
     invocation,
     cwd: options.cwd,
-    privateDirectory: dirname(options.systemPromptPath),
-    label: options.agent.id,
-    onStdout: (chunk) => collector.push(chunk),
+    onProgress: options.onProgress,
     onStderr: collectStderr,
-    signal: options.signal,
-    layout: options.herdrLayout,
+  });
+  options.manager.track(child.process);
+
+  const deadline = startedAt + options.timeoutSeconds * 1000;
+  const warnAt = Math.max(startedAt + MIN_RUN_BEFORE_WARN_MS, deadline - SOFT_TERMINATE_GRACE_MS);
+
+  let finishedFlag = false;
+  let finish!: (reason: FinishReason) => void;
+  const finished: Promise<FinishReason> = new Promise((resolve) => {
+    finish = (reason) => {
+      if (finishedFlag) return;
+      finishedFlag = true;
+      resolve(reason);
+    };
   });
 
-  if (herdrChild) {
-    child = herdrChild;
-  } else {
-    const proc = spawn(invocation.command, invocation.args, {
-      cwd: options.cwd,
-      env: invocation.env,
-      shell: false,
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    proc.stdout?.on("data", (chunk: Buffer) => collector.push(chunk));
-    proc.stderr?.on("data", collectStderr);
-    child = proc;
-  }
-  options.manager.track(child);
+  // Normal completion: agent_settled (settled) or process close (closed).
+  void child.done.then((value) => {
+    outcome = value;
+    finish(value.settled ? "settled" : "closed");
+  });
 
-  const exitCode = await new Promise<number | undefined>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const cleanup = () => {
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", abort);
-    };
-    const settle = (code?: number) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve(code);
-    };
-    const abort = () => {
-      cancelled = true;
-      void options.manager.terminate(child);
-    };
+  // Soft-terminate: steer the child to wrap up before the hard deadline.
+  const warnTimer = setTimeout(() => {
+    if (finishedFlag || warned) return;
+    warned = true;
+    child.steer(buildSoftTerminateWarning(Math.max(0, Math.round((deadline - Date.now()) / 1000))));
+    options.onProgress?.("soft deadline warning sent", child.protocol);
+  }, Math.max(0, warnAt - Date.now()));
+  warnTimer.unref?.();
 
-    if (isHerdrChild(child)) {
-      void child.completion.then((completion) => {
-        spawnError = completion.error;
-        settle(completion.exitCode);
-      });
-    } else {
-      child.once("close", (code) => settle(code ?? undefined));
-      child.once("error", (error) => {
-        spawnError = error.message;
-        settle(undefined);
-      });
+  // Hard deadline: graceful RPC abort, then process-tree termination.
+  const deadlineTimer = setTimeout(async () => {
+    if (finishedFlag) return;
+    timedOut = true;
+    try { child.abort(); } catch { /* child gone */ }
+    const settledCleanly = await Promise.race([
+      child.done.then((value) => {
+        outcome = value;
+        return true;
+      }),
+      delay(ABORT_GRACE_MS).then(() => false),
+    ]);
+    if (!finishedFlag && !settledCleanly) {
+      await options.manager.terminate(child.process);
     }
+    finish("timeout");
+  }, Math.max(0, deadline - Date.now()));
+  deadlineTimer.unref?.();
 
-    if (options.signal?.aborted) abort();
-    else options.signal?.addEventListener("abort", abort, { once: true });
+  // Master abort (Esc, session shutdown, replacement, reload).
+  const onAbort = () => {
+    if (finishedFlag) return;
+    cancelled = true;
+    try { child.abort(); } catch { /* child gone */ }
+    finish("cancelled");
+  };
+  if (options.signal?.aborted) onAbort();
+  else options.signal?.addEventListener("abort", onAbort, { once: true });
 
-    const remainingMs = Math.max(0, options.timeoutSeconds * 1000 - (Date.now() - startedAt));
-    timer = setTimeout(() => {
-      timedOut = true;
-      void options.manager.terminate(child);
-    }, remainingMs);
-    timer.unref?.();
-  });
+  // Deliver the task over the RPC stdin channel.
+  child.prompt(taskContent);
 
-  const protocol = collector.end();
+  const reason = await finished;
+
+  clearTimeout(warnTimer);
+  clearTimeout(deadlineTimer);
+  options.signal?.removeEventListener("abort", onAbort);
+
+  // Reap the child process and drain remaining output.
+  child.close();
+  const reaped = await Promise.race([
+    child.closed.then(() => true),
+    delay(DISPOSE_CLOSE_MS).then(() => false),
+  ]);
+  if (!reaped) await options.manager.terminate(child.process);
+  await child.closed;
+  outcome ??= await child.done;
+
+  const protocol = child.endProtocol();
   const rawFinalText = protocol.finalText;
   const capped = truncateUtf8(rawFinalText, DETAILS_TEXT_CAP);
   let artifactPath: string | undefined;
   if (capped.truncated) artifactPath = await options.artifacts.write(options.runId, options.agent.id, rawFinalText);
 
   let status: DedeChildResult["status"] = "succeeded";
-  let errorMessage = protocol.errorMessage ?? spawnError;
-  if (cancelled) status = "cancelled";
-  else if (timedOut) {
+  let errorMessage = protocol.errorMessage ?? outcome?.spawnError ?? outcome?.promptRejected;
+  let exitCode = outcome?.exitCode;
+  if (cancelled) {
+    status = "cancelled";
+    errorMessage ??= "Delegation cancelled";
+  } else if (timedOut) {
     status = "timed_out";
     errorMessage = `Timed out after ${options.timeoutSeconds} seconds`;
-  } else if (exitCode !== 0) {
+  } else if (outcome?.promptRejected) {
     status = "failed";
-    errorMessage ??= `Child process exited with code ${exitCode ?? "unknown"}`;
-  } else if (protocol.stopReason === "error" || protocol.stopReason === "aborted") {
+    errorMessage ??= outcome.promptRejected;
+  } else if (reason === "settled") {
+    if (protocol.stopReason === "error" || protocol.stopReason === "aborted") {
+      status = "failed";
+      errorMessage ??= `Model stopped with reason: ${protocol.stopReason}`;
+    } else if (!rawFinalText.trim()) {
+      status = "failed";
+      errorMessage ??= "Child returned no final assistant text";
+    }
+  } else {
+    // Process closed before settling.
     status = "failed";
-    errorMessage ??= `Model stopped with reason: ${protocol.stopReason}`;
-  } else if (!protocol.sawAgentEnd) {
-    status = "failed";
-    errorMessage ??= "Child JSON protocol ended without agent_end";
-  } else if (!rawFinalText.trim()) {
-    status = "failed";
-    errorMessage ??= "Child returned no final assistant text";
+    errorMessage ??= protocol.sawAgentEnd
+      ? "Child process exited before settling"
+      : "Child JSON protocol ended without agent_end";
   }
+
+  const activity = warned && status === "timed_out" && !cancelled
+    ? [...protocol.activity, { type: "status" as const, text: "soft deadline warning was sent before timeout" }].slice(-100)
+    : protocol.activity;
 
   const result: DedeChildResult = {
     id: options.agent.id,
@@ -287,7 +316,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     ...(stderr ? { stderrTail: stderr } : {}),
     ...(artifactPath ? { artifactPath } : {}),
     usage: childUsage(protocol),
-    activity: protocol.activity,
+    activity,
   };
   return { result, detailedUsage: protocol.usage };
 }

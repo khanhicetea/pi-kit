@@ -24,22 +24,27 @@ export function resolvePiExecutable(args: string[]): { command: string; args: st
 export interface ChildInvocationOptions {
   agent: ResolvedAgent;
   systemPromptPath: string;
-  taskPath: string;
   sessionDirectory: string;
   sessionPath: string;
   childSessionId: string;
-  isResume?: boolean;
   runId: string;
   parentSessionId: string;
   additionalArgs?: readonly string[];
   baseEnv?: NodeJS.ProcessEnv;
 }
 
+/**
+ * Build the headless RPC-mode invocation for one delegated child.
+ *
+ * Children run `pi --mode rpc`. The task assignment is delivered over the RPC
+ * stdin channel (a `prompt` command), never as an argument, so no user-controlled
+ * text appears in `argv`. The role contract is appended from a private
+ * mode-`0600` file via `--append-system-prompt`, which Pi reads as file contents.
+ */
 export function buildChildInvocation(options: ChildInvocationOptions): PiInvocation {
   const { agent } = options;
   const args = [
-    "--mode", "json",
-    "--print",
+    "--mode", "rpc",
     "--session-dir", options.sessionDirectory,
     "--session", options.sessionPath,
     "--no-approve",
@@ -53,12 +58,6 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
   else args.push("--tools", agent.tools.join(","));
   args.push("--model", agent.model, "--thinking", agent.thinking);
   args.push(...(options.additionalArgs ?? []));
-  args.push(
-    `@${options.taskPath}`,
-    options.isResume
-      ? "Continue the previous delegated task using the short extension in the attached task file."
-      : "Complete the delegated task in the attached task file.",
-  );
 
   const invocation = resolvePiExecutable(args);
   const env: NodeJS.ProcessEnv = mergeChildEnv([options.baseEnv ?? process.env, agent.env]);

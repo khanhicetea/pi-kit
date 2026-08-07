@@ -55,7 +55,7 @@ The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads 
 - Throttled TUI progress with elapsed/deadline display
 - Nested usage accounting and process-tree cancellation
 - Per-turn settled summary of subagent count and cost grouped by model ID
-- Automatic live child panes when the master runs inside Herdr
+- Steer-then-kill soft deadline: a child is warned to finalize before it is hard-terminated
 - Explicit prompt-template and theme discovery disabled; other child resources follow Pi defaults
 
 ## Install
@@ -74,13 +74,13 @@ npm run check
 pi -e ./src/index.ts
 ```
 
-## Herdr panes
+## Soft deadline steering
 
-When the master Pi process has `HERDR_ENV=1` and a `HERDR_PANE_ID`, `pi-dede` creates one temporary horizontal split below the master pane, then adds each child as a vertical split in that row. Each pane shows concise tool activity and the final answer while the normal structured JSON protocol continues to feed the master. Child panes close when their child finishes or is cancelled, returning the layout to the master pane.
+Children run as headless `pi --mode rpc` processes. The master drives each child over a bidirectional stdin/stdout JSON channel: it sends the task as a `prompt`, reads the event stream for progress, and—uniquely for a hard timeout—can `steer` a child that is running long.
 
-No configuration is required. If Herdr is unavailable or pane setup fails before the child command is accepted, `pi-dede` safely falls back to its normal direct child process. It never retries directly after Herdr has accepted a command, avoiding duplicate mutation work.
+Each child has one deadline (default 180s, 30–1800s). Thirty seconds before the deadline (and never in the first five seconds of a run), the master sends a steering message telling the child to stop exploring and produce its final bounded answer with the evidence it has. A child that reaches a settled state after the steer is recorded as `succeeded`. A child that does not finalize receives an RPC `abort` at the deadline, a short grace to settle, and then a hard process-tree termination (`SIGTERM`, then `SIGKILL`); it is recorded as `timed_out` and keeps its short-resume handle.
 
-The integration uses `herdr pane split` and `herdr pane run`, rather than `herdr tab create` or `herdr agent start`, because delegated Pi children remain non-interactive `--mode json --print` processes. The first split uses `--direction down` (horizontal); additional child splits use `--direction right` (vertical). Timeouts, Esc cancellation, usage accounting, persistent child sessions, and short resume behavior are unchanged.
+Esc, session replacement, reload, and shutdown all send an RPC `abort` and then terminate the running children. Extension UI dialogs a child emits are auto-cancelled, so an autonomous child can never hang waiting for a human to answer it.
 
 ## Evidence fan-out
 
@@ -107,9 +107,9 @@ The two lanes below answer different questions and request different evidence: o
 
 Independent children start as global slots become available. Results preserve request order.
 
-## Solo worker
+## Worker
 
-Use a separate call after the master has synthesized evidence and approved a concrete plan:
+After the master has synthesized evidence and approved a concrete plan, run one mutation-capable worker. It may run in its own call, or alongside read-only scouts in a single call—but a run allows at most one mutation-capable child.
 
 ```json
 {
@@ -126,7 +126,7 @@ Use a separate call after the master has synthesized evidence and approved a con
 }
 ```
 
-Any child with `bash`, `edit`, or `write` is mutation-capable and must run alone.
+Any child with `bash`, `edit`, or `write` is mutation-capable. At most one mutation-capable child may run per call; it may run alongside read-only agents, while two concurrent writers are rejected to prevent clobbered edits.
 
 ## Short continuation after timeout
 
@@ -226,11 +226,18 @@ Children are separate Pi processes, but retain Pi's normal extension discovery. 
 
 ## Security and isolation
 
-Children run as separate `pi --mode json --print` processes. They retain Pi's normal extension, skill, and context-file discovery, while prompt-template and theme discovery remain disabled by pi-dede's built-in flags; configured shared or profile `additionalArgs` can explicitly alter this setup. Inside Herdr, a private supervisor launches the same command in a temporary split pane and spools its exact JSON output back to the extension; outside Herdr, the command is spawned directly. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts and Herdr launch manifests are mode-`0600` temporary files rather than command-line text.
+Children run as separate `pi --mode rpc` processes driven over a stdin/stdout JSON channel. The task assignment is delivered as an RPC `prompt` over stdin rather than as a command-line argument, so no user-controlled text appears in `argv`. They retain Pi's normal extension, skill, and context-file discovery, while prompt-template and theme discovery remain disabled by pi-dede's built-in flags; configured shared or profile `additionalArgs` can explicitly alter this setup. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts are mode-`0600` temporary files; the role contract is appended via `--append-system-prompt`, which Pi reads as file contents.
 
 Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. Discovered context files and skills may affect the child, so use `sharedContext` and `additionalArgs` to control the child configuration explicitly.
 
-See [SPEC.md](./SPEC.md) for the complete v0.2 contract.
+See [SPEC.md](./SPEC.md) for the complete v0.3 contract.
+
+## v0.3 changes
+
+- Children now run as headless `pi --mode rpc` processes driven over a stdin/stdout JSON channel, replacing the one-way `--mode json --print` transport. The task is delivered as an RPC `prompt` over stdin rather than as an `@file` argument.
+- A **steer-then-kill soft deadline** replaces the old immediate hard kill: about 30 seconds before the deadline the child is steered to finalize; only children that do not settle are hard-terminated. A child that heeds the steer is recorded as `succeeded`.
+- The Herdr terminal-multiplexer integration was removed. Children are always direct processes; there are no pane supervisors or file-based polling.
+- Extension UI dialogs emitted by a child are auto-cancelled, so an autonomous child can never block waiting for a human.
 
 ## v0.2 breaking changes
 

@@ -47,8 +47,13 @@ const AgentSchema = Type.Object(
     systemPrompt: Type.Optional(Type.String({
       description: "Additional role constraints for a narrow custom specialty; project rules belong in sharedContext.",
     })),
-    toolPreset: Type.Optional(StringEnum(TOOL_PRESETS, {description: "Use custom when using specific tools param"})),
-    tools: Type.Optional(Type.Array(StringEnum(BUILTIN_TOOLS), { maxItems: 7 })),
+    toolPreset: Type.Optional(StringEnum(TOOL_PRESETS, {
+      description: "Named tool set: read-only (default for scout/reviewer/custom), coding (default for worker), or none. Omit and set tools for an exact custom set.",
+    })),
+    tools: Type.Optional(Type.Array(StringEnum(BUILTIN_TOOLS), {
+      maxItems: 7,
+      description: "Exact child tool list; selects the custom preset directly, so toolPreset may be omitted.",
+    })),
     model: Type.Optional(Type.String({
       minLength: 1,
       description: "Omit to inherit the configured profile default (profiles.<profile>.model), falling back to the master's current model when no profile config is set. Set only to intentionally override with a specific model.",
@@ -267,12 +272,13 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     }
 
     const profile = agent.profile ?? "custom";
-    const toolPreset = agent.toolPreset ?? PROFILE_DEFAULT_PRESET[profile];
+    // Providing an explicit `tools` list selects the custom preset directly; no
+    // separate toolPreset is required. Omitting `tools` uses the named preset.
+    const toolPreset: ToolPreset = agent.tools !== undefined
+      ? "custom"
+      : (agent.toolPreset ?? PROFILE_DEFAULT_PRESET[profile]);
     if (toolPreset === "custom" && agent.tools === undefined) {
       throw new Error(`${label}.tools is required when toolPreset is custom`);
-    }
-    if (toolPreset !== "custom" && agent.tools !== undefined) {
-      throw new Error(`${label}.tools is allowed only when toolPreset is custom`);
     }
     const tools = toolPreset === "custom" ? [...(agent.tools ?? [])] : [...PRESET_TOOLS[toolPreset]];
     if (new Set(tools).size !== tools.length) throw new Error(`${label}.tools contains duplicates`);
@@ -318,8 +324,11 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     };
   });
 
-  if (resolved.length > 1 && resolved.some((agent) => agent.mutationCapable)) {
-    throw new Error("Mutation-capable agents must run alone; multi-agent runs must be entirely read-only");
+  // A single mutation-capable worker may run alongside read-only agents, but two
+  // concurrent writers can clobber one another's edits, so cap it at one per run.
+  const mutationCount = resolved.filter((agent) => agent.mutationCapable).length;
+  if (mutationCount > 1) {
+    throw new Error("At most one mutation-capable agent per run; the others must be read-only");
   }
   return resolved;
 }

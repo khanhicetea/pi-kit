@@ -140,9 +140,15 @@ describe("semantic validation", () => {
     }), { ...context, profileDefaults: { scout: { env: configured } } })).toThrow(/effectiveEnv.*at most 64/);
   });
 
-  it("requires explicit tools for custom and rejects tools on other presets", () => {
+  it("auto-selects the custom preset when tools are supplied and requires tools only for an explicit custom preset", () => {
+    // Explicit custom preset with no tools is still invalid.
     expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", toolPreset: "custom" }] }), context)).toThrow(/tools is required/);
-    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", toolPreset: "none", tools: [] }] }), context)).toThrow(/allowed only/);
+    // Providing tools selects custom directly; no toolPreset needed.
+    const [promoted] = validateAndResolve(valid({ agents: [{ id: "a", goal: "x", tools: ["read", "grep"] }] }), context);
+    expect(promoted).toMatchObject({ toolPreset: "custom", tools: ["read", "grep"] });
+    // tools wins even when a named preset is also present.
+    const [override] = validateAndResolve(valid({ agents: [{ id: "a", goal: "x", toolPreset: "none", tools: [] }] }), context);
+    expect(override).toMatchObject({ toolPreset: "custom", tools: [] });
   });
 
   it("allows an explicitly empty custom toolset", () => {
@@ -238,15 +244,23 @@ describe("semantic validation", () => {
     expect(() => validateAndResolve(valid({ agents: [...three, { id: "d", goal: "d" }] }), context)).toThrow(/one to 3/);
   });
 
-  it("treats bash, edit, and write as mutation-capable and rejects parallel mutation", () => {
+  it("treats bash, edit, and write as mutation-capable, allows one worker with readers, and rejects parallel workers", () => {
     expect(isMutationCapable(["bash"])).toBe(true);
     expect(isMutationCapable(["edit"])).toBe(true);
     expect(isMutationCapable(["write"])).toBe(true);
     expect(isMutationCapable(["read", "grep"])).toBe(false);
-    expect(() => validateAndResolve(valid({ agents: [
+    // One mutation-capable worker may run alongside read-only agents.
+    const [worker, reader] = validateAndResolve(valid({ agents: [
       { id: "worker", profile: "worker", goal: "change it" },
-      { id: "reader", goal: "inspect it" },
-    ] }), context)).toThrow(/must run alone/);
+      { id: "reader", profile: "scout", goal: "inspect it" },
+    ] }), context);
+    expect(worker.mutationCapable).toBe(true);
+    expect(reader.mutationCapable).toBe(false);
+    // Two concurrent writers can clobber edits, so they are rejected.
+    expect(() => validateAndResolve(valid({ agents: [
+      { id: "worker-a", profile: "worker", goal: "change it" },
+      { id: "worker-b", profile: "worker", goal: "change it too" },
+    ] }), context)).toThrow(/At most one mutation-capable agent/);
   });
 
   it("checks reduced UTF-8 byte limits", () => {

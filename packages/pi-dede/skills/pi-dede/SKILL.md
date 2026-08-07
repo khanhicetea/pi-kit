@@ -38,10 +38,10 @@ Before parallel fanout, compare the contracts. Do not send clone prompts with on
 | --- | --- |
 | Two or three independent questions | Parallel read-only `scout`, `reviewer`, or `custom` children |
 | One bounded second opinion | One read-only `reviewer` or `custom` child |
-| One approved code change | One solo `worker`; include scope, success criteria, validation, and handoff requirements |
+| One approved code change | One `worker` (optionally alongside read-only scouts); at most one mutation-capable child per run |
 | Finish near-complete timed-out work | One solo resume with only what remains and a 30–180 second deadline |
 
-Never mix a mutation-capable child with another child. Do not create extra lanes merely to use all three slots.
+A run allows at most one mutation-capable child; it may run alongside read-only agents, but never pair two writers (they can clobber one another's edits). Do not create extra lanes merely to use all three slots.
 
 ## After children return
 

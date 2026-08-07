@@ -28,6 +28,23 @@ const agent: ResolvedAgent = {
   mutationCapable: false,
 };
 
+// Reads RPC commands (LF-delimited JSON) from stdin and invokes onCommand for each.
+const RPC_READER = `
+let __buf = "";
+process.stdin.setEncoding("utf8");
+function __send(o){ process.stdout.write(JSON.stringify(o) + "\\n"); }
+process.stdin.on("data", (chunk) => {
+  __buf += chunk;
+  let i;
+  while ((i = __buf.indexOf("\\n")) >= 0) {
+    const line = __buf.slice(0, i).replace(/\\r$/, "");
+    __buf = __buf.slice(i + 1);
+    if (!line.trim()) continue;
+    let cmd; try { cmd = JSON.parse(line); } catch { continue; }
+    onCommand(cmd);
+  }
+});`;
+
 describe("fake Pi integration", () => {
   it("runs independent evidence agents in parallel without forwarding sibling output", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-parallel-"));
@@ -36,24 +53,28 @@ describe("fake Pi integration", () => {
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
     await writeFile(fake, `
-      import { appendFileSync, readFileSync } from "node:fs";
-      const id = process.env.PI_DEDE_AGENT_ID;
-      const taskArg = process.argv.find((arg) => arg.startsWith("@"));
-      const task = readFileSync(taskArg.slice(1), "utf8");
-      const log = (event) => appendFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({
-        id, event, task, childScope: process.env.CHILD_SCOPE
-      }) + "\\n");
-      log("start");
-      if (id === "slow") await new Promise((resolve) => setTimeout(resolve, 250));
-      log("end");
-      const text = "## Answer\\n- " + id.toUpperCase() + " RESULT";
-      const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-      console.log(JSON.stringify({ type: "message_end", message: {
-        role: "assistant", content: [{ type: "text", text }], provider: "fake", model: "model",
-        responseId: id, timestamp: Date.now(), stopReason: "stop", usage
-      }}));
-      console.log(JSON.stringify({ type: "agent_end" }));
+      import { appendFileSync } from "node:fs";
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type !== "prompt") return;
+        const id = process.env.PI_DEDE_AGENT_ID;
+        appendFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({
+          id, event: "start", task: cmd.message, childScope: process.env.CHILD_SCOPE
+        }) + "\\n");
+        __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        setTimeout(() => {
+          appendFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({ id, event: "end" }) + "\\n");
+          const text = "## Answer\\n- " + id.toUpperCase() + " RESULT";
+          const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+          __send({ type: "message_end", message: {
+            role: "assistant", content: [{ type: "text", text }], provider: "fake", model: "model",
+            responseId: id, timestamp: Date.now(), stopReason: "stop", usage
+          }});
+          __send({ type: "agent_end" });
+          __send({ type: "agent_settled" });
+        }, id === "slow" ? 250 : 0);
+      }
     `);
 
     process.argv[1] = fake;
@@ -129,20 +150,26 @@ describe("fake Pi integration", () => {
     process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
     await writeFile(fake, `
       import { existsSync, writeFileSync } from "node:fs";
-      const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
-      const sessionPath = value("--session");
-      const state = sessionPath + ".state";
-      if (!existsSync(state)) {
-        writeFileSync(state, "evidence collected before timeout");
-        setInterval(() => undefined, 1000);
-      } else {
-        const usage = { input: 2, output: 1, cacheRead: 1, cacheWrite: 0, totalTokens: 4,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-        console.log(JSON.stringify({ type: "message_end", message: {
-          role: "assistant", content: [{ type: "text", text: "## Answer\\n- reused old session evidence" }],
-          provider: "fake", model: "model", responseId: "resume", timestamp: Date.now(), stopReason: "stop", usage
-        }}));
-        console.log(JSON.stringify({ type: "agent_end" }));
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type !== "prompt") return;
+        __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
+        const sessionPath = value("--session");
+        const state = sessionPath + ".state";
+        if (!existsSync(state)) {
+          writeFileSync(state, "evidence collected before timeout");
+          setInterval(() => undefined, 1000);
+        } else {
+          const usage = { input: 2, output: 1, cacheRead: 1, cacheWrite: 0, totalTokens: 4,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+          __send({ type: "message_end", message: {
+            role: "assistant", content: [{ type: "text", text: "## Answer\\n- reused old session evidence" }],
+            provider: "fake", model: "model", responseId: "resume", timestamp: Date.now(), stopReason: "stop", usage
+          }});
+          __send({ type: "agent_end" });
+          __send({ type: "agent_settled" });
+        }
       }
     `);
 
@@ -224,6 +251,7 @@ describe("fake Pi integration", () => {
     const task = join(directory, "task.md");
     await writeFile(system, "system");
     await writeFile(task, "task");
+    // Bare hang: never reads stdin, never settles.
     await writeFile(fake, "setInterval(() => undefined, 1000);\n");
 
     process.argv[1] = fake;
@@ -257,7 +285,7 @@ describe("fake Pi integration", () => {
     }
   });
 
-  it("runs a child, parses JSON events, and accounts for usage", async () => {
+  it("runs a child over RPC, parses JSON events, and accounts for usage", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-fake-"));
     const fake = join(directory, "fake-pi.mjs");
     const system = join(directory, "system.md");
@@ -265,14 +293,20 @@ describe("fake Pi integration", () => {
     await writeFile(system, "system");
     await writeFile(task, "task");
     await writeFile(fake, `
-      const usage = { input: 12, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 20,
-        cost: { input: .1, output: .2, cacheRead: .01, cacheWrite: .02, total: .33 } };
-      console.log(JSON.stringify({ type: "tool_execution_start", toolName: "read", args: { path: "src/index.ts" } }));
-      console.log(JSON.stringify({ type: "message_end", message: {
-        role: "assistant", content: [{ type: "thinking", thinking: "secret" }, { type: "text", text: "## Answer\\n- Done" }],
-        provider: "fake", model: "model", responseId: "one", timestamp: Date.now(), stopReason: "stop", usage
-      }}));
-      console.log(JSON.stringify({ type: "agent_end" }));
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type !== "prompt") return;
+        __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        const usage = { input: 12, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: 20,
+          cost: { input: .1, output: .2, cacheRead: .01, cacheWrite: .02, total: .33 } };
+        __send({ type: "tool_execution_start", toolName: "read", args: { path: "src/index.ts" } });
+        __send({ type: "message_end", message: {
+          role: "assistant", content: [{ type: "thinking", thinking: "secret" }, { type: "text", text: "## Answer\\n- Done" }],
+          provider: "fake", model: "model", responseId: "one", timestamp: Date.now(), stopReason: "stop", usage
+        }});
+        __send({ type: "agent_end" });
+        __send({ type: "agent_settled" });
+      }
     `);
 
     process.argv[1] = fake;
@@ -302,6 +336,137 @@ describe("fake Pi integration", () => {
       expect(detailedUsage.cost.total).toBe(0.33);
       expect(manager.size).toBe(0);
     } finally {
+      await artifacts.cleanup();
+      await manager.killAll();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("steers a child toward a soft deadline before hard-terminating", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-steer-"));
+    const fake = join(directory, "fake-pi.mjs");
+    const system = join(directory, "system.md");
+    const task = join(directory, "task.md");
+    const steerLog = join(directory, "commands.log");
+    await writeFile(system, "system");
+    await writeFile(task, "task");
+    // Responds to the prompt, then heeds a `steer` by finishing immediately.
+    await writeFile(fake, `
+      import { appendFileSync } from "node:fs";
+      ${RPC_READER}
+      function onCommand(cmd) {
+        appendFileSync(process.env.DEDE_STEER_LOG, cmd.type + "\\n");
+        if (cmd.type === "prompt") {
+          __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        } else if (cmd.type === "steer") {
+          const usage = { input: 3, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 5,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+          __send({ type: "message_end", message: {
+            role: "assistant", content: [{ type: "text", text: "## Answer\\n- heeded the deadline warning" }],
+            provider: "fake", model: "model", responseId: "steered", timestamp: Date.now(), stopReason: "stop", usage
+          }});
+          __send({ type: "agent_end" });
+          __send({ type: "agent_settled" });
+        }
+      }
+    `);
+
+    process.argv[1] = fake;
+    process.env.DEDE_STEER_LOG = steerLog;
+    const manager = new ChildProcessManager();
+    const artifacts = new ArtifactManager("steer-session");
+
+    try {
+      const { result } = await runChild({
+        agent: { ...agent, timeoutSeconds: 30 },
+        cwd: directory,
+        systemPromptPath: system,
+        taskPath: task,
+        sessionDirectory: directory,
+        sessionPath: join(directory, "steer-session.jsonl"),
+        childSessionId: "33333333-3333-4333-8333-333333333333",
+        runId: "steer-run",
+        parentSessionId: "parent",
+        timeoutSeconds: 30,
+        manager,
+        artifacts,
+      });
+      // The steer saved the child from a hard timeout.
+      expect(result.status).toBe("succeeded");
+      expect(result.finalText).toBe("## Answer\n- heeded the deadline warning");
+      const commands = (await readFile(steerLog, "utf8")).trim().split("\n");
+      expect(commands).toContain("prompt");
+      expect(commands).toContain("steer");
+      expect(commands.indexOf("steer")).toBeGreaterThan(commands.indexOf("prompt"));
+      expect(manager.size).toBe(0);
+    } finally {
+      delete process.env.DEDE_STEER_LOG;
+      await artifacts.cleanup();
+      await manager.killAll();
+      await rm(directory, { recursive: true, force: true });
+    }
+  }, 20000);
+
+  it("auto-cancels an extension UI dialog so a child can never block on a human", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-ui-"));
+    const fake = join(directory, "fake-pi.mjs");
+    const system = join(directory, "system.md");
+    const task = join(directory, "task.md");
+    const uiLog = join(directory, "ui.log");
+    await writeFile(system, "system");
+    await writeFile(task, "task");
+    // Emits a dialog request, then finishes only once the master auto-cancels it.
+    // Without auto-cancel the child would wait forever for a human and time out.
+    await writeFile(fake, `
+      import { appendFileSync } from "node:fs";
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type === "prompt") {
+          __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+          __send({ type: "extension_ui_request", id: "ui-1", method: "confirm", title: "Allow?", message: "ok?" });
+        } else if (cmd.type === "extension_ui_response") {
+          appendFileSync(process.env.DEDE_UI_LOG, JSON.stringify(cmd) + "\\n");
+          if (cmd.cancelled) {
+            const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+            __send({ type: "message_end", message: {
+              role: "assistant", content: [{ type: "text", text: "## Answer\\n- proceeded after auto-cancel" }],
+              provider: "fake", model: "model", responseId: "ui", timestamp: Date.now(), stopReason: "stop", usage
+            }});
+            __send({ type: "agent_end" });
+            __send({ type: "agent_settled" });
+          }
+        }
+      }
+    `);
+
+    process.argv[1] = fake;
+    process.env.DEDE_UI_LOG = uiLog;
+    const manager = new ChildProcessManager();
+    const artifacts = new ArtifactManager("ui-session");
+    try {
+      const { result } = await runChild({
+        agent: { ...agent, timeoutSeconds: 10 },
+        cwd: directory,
+        systemPromptPath: system,
+        taskPath: task,
+        sessionDirectory: directory,
+        sessionPath: join(directory, "ui-session.jsonl"),
+        childSessionId: "44444444-4444-4444-8444-444444444444",
+        runId: "ui-run",
+        parentSessionId: "parent",
+        timeoutSeconds: 10,
+        manager,
+        artifacts,
+      });
+      // The dialog was auto-cancelled, so the child proceeded instead of hanging.
+      expect(result.status).toBe("succeeded");
+      expect(result.finalText).toBe("## Answer\n- proceeded after auto-cancel");
+      const responses = (await readFile(uiLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(responses[0]).toMatchObject({ type: "extension_ui_response", id: "ui-1", cancelled: true });
+      expect(manager.size).toBe(0);
+    } finally {
+      delete process.env.DEDE_UI_LOG;
       await artifacts.cleanup();
       await manager.killAll();
       await rm(directory, { recursive: true, force: true });

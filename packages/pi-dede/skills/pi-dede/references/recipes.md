@@ -43,9 +43,9 @@ Use one child when the question requires judgment but is still bounded. Do not u
 }
 ```
 
-## Solo implementation worker
+## Implementation worker
 
-The worker receives an approved direction, not an open-ended design problem.
+The worker receives an approved direction, not an open-ended design problem. Run it solo for a clean change, or alongside read-only scouts when investigation and the approved fix can proceed together—but keep it to one mutation-capable child per run.
 
 ```json
 {
@@ -57,6 +57,27 @@ The worker receives an approved direction, not an open-ended design problem.
     "goal": "Implement only <approved change> in <allowed scope>. Success means <observable criteria>. Run <focused checks>. Do not make unapproved product/architecture/scope decisions. Return changed files, command outcomes, failures, and residual risk; stop after the change and checks."
   }],
   "timeoutSeconds": 300
+}
+```
+
+When the worker's scope is disjoint from a read-only lane, they may share one call (still only one writer):
+
+```json
+{
+  "objective": "Apply the approved <change> while confirming <one invariant> holds",
+  "sharedContext": "Approved plan; disjoint scopes; invariants; validation command.",
+  "agents": [
+    {
+      "id": "worker",
+      "profile": "worker",
+      "goal": "Implement only <approved change> in <allowed scope>. Run <focused checks>. Return changed files, outcomes, and residual risk; stop when complete."
+    },
+    {
+      "id": "verify",
+      "profile": "reviewer",
+      "goal": "Read-only check of <one invariant> in <untouched scope>. Return pass/fail with line evidence; do not edit; stop after the decision."
+    }
+  ]
 }
 ```
 

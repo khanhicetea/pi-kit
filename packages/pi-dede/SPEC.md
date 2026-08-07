@@ -1,4 +1,4 @@
-# pi-dede v0.2 Specification
+# pi-dede v0.3 Specification
 
 **Status:** Implemented contract
 
@@ -26,11 +26,11 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 3. **Bounded synchronous runs:** 180-second default, 1800-second maximum.
 4. **Bounded reasoning:** profile defaults are `low` or `medium`, not inherited from the master.
 5. **Small outputs:** children are instructed to use at most 400 words; model-visible output is capped at 4 KiB per child and 12 KiB aggregate.
-6. **Least privilege:** read-only excludes `bash`; mutation-capable work runs alone.
+6. **Least privilege:** read-only excludes `bash`; at most one mutation-capable child runs per call.
 7. **Bounded continuation:** a timed-out child keeps its identity and may receive only a 30–180 second solo extension.
 8. **No recursive delegation:** children may use normal Pi extension discovery, but receive `PI_DEDE_DEPTH=1` so pi-dede does not register recursively.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
-10. **Terminal-aware execution:** when the master runs in a Herdr pane, children are shown in a temporary horizontal split with vertical child panes without changing their headless protocol.
+10. **Bidirectional headless transport:** children run `pi --mode rpc` so the master delivers the task, steers a child near its deadline, and aborts gracefully over stdin/stdout, reserving process-tree termination for the hard deadline. A soft deadline warning always precedes the hard kill.
 11. **Progressive orchestration guidance:** the package exposes a parent-only skill that teaches the delegation gate, compact lane contracts, distinct fan-out, verification, and bounded recipes without widening the runtime workflow surface.
 
 ## 3. Public tool
@@ -55,7 +55,7 @@ interface AgentRequest {
   resume?: string;            // handle from a timed-out child
   systemPrompt?: string;      // narrow role constraints; forbidden on resume
   toolPreset?: ToolPreset;
-  tools?: BuiltinTool[];      // only with custom preset
+  tools?: BuiltinTool[];      // exact list; selects the custom preset
   model?: string;
   thinking?: Thinking;
   env?: Record<string, string>; // child-specific environment overrides
@@ -116,7 +116,7 @@ The config accepts `profiles.<profile>.model`, `profiles.<profile>.thinking`, `p
 | `none` | none | read-only |
 | `custom` | exact validated list | derived from list |
 
-`bash`, `edit`, and `write` are always mutation-capable. If a run has more than one child, every child must be read-only. A mutation-capable child must run alone.
+`bash`, `edit`, and `write` are always mutation-capable. A run may contain at most one mutation-capable child; the others must be read-only. (Two concurrent writers can clobber one another's edits, so parallel mutation is rejected.) Providing an explicit `tools` list selects the `custom` preset directly, so `toolPreset` may be omitted.
 
 ## 6. Scheduling
 
@@ -135,19 +135,18 @@ There are no dependency graphs, child-to-child messages, planner handoffs, autom
 Each child is a separate process launched with `shell: false`, conceptually:
 
 ```sh
-pi --mode json --print --no-approve \
+pi --mode rpc --no-approve \
   --session-dir <pi-project-session-dir> --session <0600-child-session-file> \
   --no-prompt-templates --no-themes \
   --append-system-prompt <0600-system-file> \
   --tools read,grep,find,ls \
   --model <provider/model> --thinking <level> \
-  [effective shared-or-profile additionalArgs] \
-  @<0600-task-file> "Complete the delegated task in the attached task file."
+  [effective shared-or-profile additionalArgs]
 ```
 
-The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
+The task assignment is delivered as an RPC `prompt` command over the child's stdin; it never appears in process arguments. The child stays headless and uses no terminal multiplexer. The master reads the LF-delimited JSONL event stream from stdout for state (final text, usage, activity) and writes control commands back over stdin: the initial `prompt`, a `steer` warning near the deadline, and an `abort` at the deadline. Extension UI dialogs emitted by the child are auto-cancelled so an autonomous child can never block waiting for a human.
 
-When the master environment contains `HERDR_ENV=1` and `HERDR_PANE_ID`, the extension first creates a temporary horizontal split below the master with `herdr pane split ... --direction down`, then creates one vertical `--direction right` split for each additional child. A private supervisor runs in each child pane with `herdr pane run`; it launches the same invocation, displays bounded activity in the terminal, and spools exact stdout/stderr back to the parent collector. Delegated children remain headless processes; `herdr tab create` and `herdr agent start` are not used. Setup failures before command acceptance fall back to direct spawning. Failures after command acceptance never launch a duplicate direct child. Each temporary child pane closes after completion or cancellation.
+The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation, and sends a continuation `prompt`. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
 
 The system prompt tells every child to:
 
@@ -167,9 +166,9 @@ Initial child timeout precedence is explicit agent value, run default, then 180 
 
 Resume timeout precedence is explicit agent value, run default, then 60 seconds. A resume is rejected above 180 seconds and must still meet the 30-second minimum.
 
-A child has one execution deadline beginning when its runner starts. Herdr setup time is charged against that budget so pane dispatch cannot extend it. Timeout terminates its complete process tree and marks only that child `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
+A child has one execution deadline beginning when its runner starts. At `deadline − 30s` (clamped to no earlier than 5s after start) the master sends a `steer` instructing the child to stop exploring and finalize its bounded answer with the evidence it has. If the child reaches `agent_settled` after the steer, it is recorded as `succeeded`. Otherwise, at the deadline the master sends an RPC `abort`, waits a short grace for `agent_settled`, and then terminates the complete process tree (`SIGTERM`, then `SIGKILL` after five seconds). Only that child is marked `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
 
-Parent abort, session replacement, reload, or shutdown cancels queued work and terminates every running process tree. Graceful termination is followed by forced termination after five seconds. For Herdr children, cancellation is relayed to the pane supervisor and process group before the child pane is force-closed.
+Parent abort, session replacement, reload, or shutdown cancels queued work, sends an RPC `abort` to each running child, and terminates every process tree. Graceful termination is followed by forced termination after five seconds.
 
 ## 9. JSON collection and progress
 
@@ -241,7 +240,7 @@ Tool allowlists are capability reduction, not an OS sandbox. Children retain the
 
 Explicit `agents[].env` values are part of the tool call and therefore stored in the master transcript. Profile-configured values are not copied into prompts, progress, or results, but are plaintext in the sidecar file. Protected startup/control variables prevent environment overrides from changing the spawned executable, injecting runtime preload code, restoring the parent's session identity, or enabling recursive delegation.
 
-Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch manifests and protocol spools use the same private directory and mode-`0600` files; inherited Herdr pane identity is replaced by the child pane's authoritative environment. Child conversations use Pi's persistent project session directory and remain until the user removes them through Pi's normal session management. No user-controlled prompt appears directly in process arguments. Child output and repository text are untrusted and never executed by the extension.
+Prompts use a mode-`0700` run directory and mode-`0600` files. The task assignment is sent over the RPC stdin pipe rather than command-line arguments, so no user-controlled text appears in `argv`. Child conversations use Pi's persistent project session directory and remain until the user removes them through Pi's normal session management. Child output and repository text are untrusted and never executed by the extension.
 
 ## 13. Non-goals
 
@@ -250,7 +249,7 @@ Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch mani
 - recursive delegation;
 - child session reuse except a master-approved short continuation after timeout;
 - more than three active children;
-- parallel or mixed read/write runs;
+- two or more mutation-capable children in a single run;
 - inheritance of the master's in-memory resource/configuration state;
 - inheritance of the master's in-memory extension/custom-tool state;
 - filesystem/network sandboxing;
