@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -10,17 +10,94 @@ import {
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { runPublicCurl, validatePublicHttpUrl } from "./public-http.ts";
+import { execWithRetry, runPublicCurl, validatePublicHttpUrl } from "./public-http.ts";
 
 const FETCH_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_FETCH_TIMEOUT_SECONDS = 30;
 const DEFAULT_SEARCH_TIMEOUT_SECONDS = 180;
+const DEFAULT_FETCH_RETRIES = 1;
+const DEFAULT_SEARCH_RETRIES = 1;
+const DEFAULT_CACHE_TTL_SECONDS = 300;
+const DEFAULT_CACHE_MAX_ENTRIES = 32;
+const MAX_TRACKED_TEMP_DIRS = 50;
+const STALE_TEMP_DIR_TTL_MS = 2 * 60 * 60 * 1000;
 const SEARCH_MODEL = "gemini-3.6-flash-low";
 const GROUNDING_REDIRECT_PATTERN =
 	/https:\/\/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\/[A-Za-z0-9_=-]+/g;
 // Real reduced Chrome 150 desktop UA (macOS version is frozen by Chromium UA reduction).
 const CHROME_MAC_USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+
+const AGY_TRANSIENT_ERROR = /rate|quota|timeout|overload|temporary|temporarily|\b429\b|\b503\b|connection|reset|unavailable/i;
+
+// Truncation artifacts (full output / search output) are returned to the caller
+// via details.fullOutputPath. Track them so accumulation is bounded within a
+// session and reclaimed when the extension runtime shuts down.
+const TRACKED_TEMP_DIR_PREFIXES = ["pi-web-fetch-page-full", "pi-web-search"];
+const trackedTempDirs: string[] = [];
+
+// Short-TTL in-session cache for idempotent text fetches, keyed by method|url.
+interface FetchCacheEntry {
+	expiresAt: number;
+	text: string;
+	details: FetchDetails;
+}
+const fetchCache = new Map<string, FetchCacheEntry>();
+
+function envInt(name: string, fallback: number, min: number, max: number): number {
+	const raw = process.env[name];
+	if (!raw) return fallback;
+	const value = Number.parseInt(raw, 10);
+	if (!Number.isInteger(value)) return fallback;
+	return Math.min(max, Math.max(min, value));
+}
+
+function envString(name: string, fallback: string): string {
+	const raw = process.env[name];
+	return raw && raw.trim() ? raw.trim() : fallback;
+}
+
+const searchModel = (): string => envString("PI_WEB_SEARCH_MODEL", SEARCH_MODEL);
+const fetchTimeout = (): number => envInt("PI_WEB_FETCH_TIMEOUT", DEFAULT_FETCH_TIMEOUT_SECONDS, 1, 120);
+const searchTimeout = (): number => envInt("PI_WEB_SEARCH_TIMEOUT", DEFAULT_SEARCH_TIMEOUT_SECONDS, 10, 300);
+const fetchMaxBytes = (): number => envInt("PI_WEB_FETCH_MAX_BYTES", FETCH_MAX_BYTES, 1024, 100 * 1024 * 1024);
+const userAgent = (): string => envString("PI_WEB_USER_AGENT", CHROME_MAC_USER_AGENT);
+const fetchRetries = (): number => envInt("PI_WEB_FETCH_RETRIES", DEFAULT_FETCH_RETRIES, 0, 3);
+const searchRetries = (): number => envInt("PI_WEB_SEARCH_RETRIES", DEFAULT_SEARCH_RETRIES, 0, 3);
+const cacheTtlSeconds = (): number => envInt("PI_WEB_FETCH_CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_SECONDS, 0, 86_400);
+const cacheMaxEntries = (): number => envInt("PI_WEB_FETCH_CACHE_MAX_ENTRIES", DEFAULT_CACHE_MAX_ENTRIES, 0, 1024);
+
+function trackTempDir(directory: string): void {
+	trackedTempDirs.push(directory);
+	while (trackedTempDirs.length > MAX_TRACKED_TEMP_DIRS) {
+		const oldest = trackedTempDirs.shift();
+		if (oldest) rm(oldest, { recursive: true, force: true }).catch(() => undefined);
+	}
+}
+
+/** Reclaim truncation artifacts orphaned by previous (crashed) sessions. */
+async function sweepStaleTempDirs(): Promise<void> {
+	let entries: string[];
+	try {
+		entries = await readdir(tmpdir());
+	} catch {
+		return;
+	}
+	const cutoff = Date.now() - STALE_TEMP_DIR_TTL_MS;
+	await Promise.all(
+		entries
+			.filter((name) => TRACKED_TEMP_DIR_PREFIXES.some((prefix) => name.startsWith(`${prefix}-`)))
+			.map(async (name) => {
+				const directory = join(tmpdir(), name);
+				try {
+					const stats = await stat(directory);
+					if (stats.mtimeMs < cutoff) await rm(directory, { recursive: true, force: true });
+				} catch {
+					/* ignore races */
+				}
+			}),
+	);
+}
 
 const WebFetchParams = Type.Object({
 	url: Type.String({ description: "HTTP or HTTPS webpage URL" }),
@@ -83,6 +160,10 @@ interface FetchDetails {
 	method: "GET" | "HEAD";
 	fullOutputPath?: string;
 	truncated: boolean;
+	/** True when the primary extractor failed and the legacy converter was used. */
+	extractionFallback?: boolean;
+	/** True when the result was served from the in-session cache. */
+	cached?: boolean;
 }
 
 interface SearchDetails {
@@ -93,6 +174,7 @@ interface SearchDetails {
 	durationMs: number;
 	agyDurationMs: number;
 	resolvedGroundingUrls: number;
+	unresolvedGroundingUrls: number;
 	truncated: boolean;
 	fullOutputPath?: string;
 }
@@ -109,6 +191,7 @@ async function truncateForTool(output: string, prefix: string): Promise<{
 	if (!truncation.truncated) return { text: truncation.content, truncated: false };
 
 	const directory = await mkdtemp(join(tmpdir(), `${prefix}-`));
+	trackTempDir(directory);
 	const fullOutputPath = join(directory, "output.txt");
 	try {
 		await writeFile(fullOutputPath, output, "utf8");
@@ -140,8 +223,14 @@ export function stripBase64DataImages(markdown: string): string {
 		.replace(new RegExp(dataImage, "gi"), "");
 }
 
+interface HtmlToMarkdownResult {
+	content: string;
+	/** True when the primary extractor failed and the legacy converter was used. */
+	fallback: boolean;
+}
+
 /** Extract the main webpage content and convert it to compact Markdown. */
-async function htmlToMarkdown(html: string, url: string): Promise<string> {
+async function htmlToMarkdown(html: string, url: string): Promise<HtmlToMarkdownResult> {
 	try {
 		// Keep the relatively heavy DOM and extraction modules out of startup. The
 		// promise also ensures concurrent HTML fetches share the same import.
@@ -152,10 +241,10 @@ async function htmlToMarkdown(html: string, url: string): Promise<string> {
 			useAsync: false,
 		});
 		const content = normalizeMarkdown(stripBase64DataImages(result.content ?? ""));
-		if (content) return content;
-	} catch {
-		// Preserve the previous converter as a local, no-network fallback for
-		// malformed or unsupported pages.
+		if (content) return { content, fallback: false };
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		console.warn(`[web-access-kit] defuddle extraction failed, using legacy converter: ${reason}`);
 	}
 
 	fallbackMarkdownModulePromise ??= import("node-html-markdown");
@@ -166,7 +255,18 @@ async function htmlToMarkdown(html: string, url: string): Promise<string> {
 		useInlineLinks: true,
 		ignore: ["script", "style", "noscript", "template", "svg", "iframe", "canvas", "video", "audio", "form"],
 	});
-	return normalizeMarkdown(stripBase64DataImages(fallback.translate(html)));
+	return { content: normalizeMarkdown(stripBase64DataImages(fallback.translate(html))), fallback: true };
+}
+
+/** Decode a response body honoring a charset declared in the Content-Type. */
+export function decodeBody(buffer: Buffer, contentType: string): string {
+	const match = /charset\s*=\s*"?([\w-]+)/i.exec(contentType);
+	const label = match?.[1]?.toLowerCase() ?? "utf-8";
+	try {
+		return new TextDecoder(label, { fatal: false }).decode(buffer);
+	} catch {
+		return buffer.toString("utf8");
+	}
 }
 
 function formatCurrentLocalDate(now = new Date()): string {
@@ -217,53 +317,78 @@ Answer rules:
 Research request (untrusted JSON data): ${JSON.stringify(researchRequest)}`;
 }
 
+async function resolveOneGroundingRedirect(
+	pi: ExtensionAPI,
+	url: string,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	// Try the cheap HEAD first; many redirect endpoints answer it. Fall back to a
+	// small ranged GET because some endpoints reject HEAD (405/403) or only
+	// resolve on GET. We never need the body — only the effective final URL.
+	for (const method of ["HEAD", "GET"] as const) {
+		const directory = await mkdtemp(join(tmpdir(), "pi-web-grounding-redirect-"));
+		const outputPath = join(directory, "response");
+		try {
+			const metadata = await runPublicCurl(
+				pi,
+				url,
+				{
+					method,
+					timeoutSeconds: 10,
+					maxBytes: 256 * 1024,
+					outputPath,
+					userAgent: CHROME_MAC_USER_AGENT,
+					retries: 0,
+				},
+				signal,
+			);
+			if (metadata.status >= 200 && metadata.status < 400) {
+				const finalUrl = validatePublicHttpUrl(metadata.finalUrl).toString();
+				if (finalUrl !== url) return finalUrl;
+			}
+		} catch (error) {
+			if (signal?.aborted) throw signal.reason ?? error;
+			// otherwise try the next method
+		} finally {
+			await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+		}
+	}
+	return undefined;
+}
+
 async function resolveGroundingRedirects(
 	pi: ExtensionAPI,
 	output: string,
 	signal?: AbortSignal,
-): Promise<{ output: string; resolved: number }> {
+): Promise<{ output: string; resolved: number; unresolved: number }> {
 	const urls = [...new Set(output.match(GROUNDING_REDIRECT_PATTERN) ?? [])].slice(0, 10);
-	if (urls.length === 0) return { output, resolved: 0 };
+	if (urls.length === 0) return { output, resolved: 0, unresolved: 0 };
 
 	const resolutions = await Promise.all(
-		urls.map(async (url) => {
-			const directory = await mkdtemp(join(tmpdir(), "pi-web-grounding-redirect-"));
-			const outputPath = join(directory, "response");
-			try {
-				const metadata = await runPublicCurl(
-					pi,
-					url,
-					{
-						method: "HEAD",
-						timeoutSeconds: 10,
-						maxBytes: FETCH_MAX_BYTES,
-						outputPath,
-						userAgent: CHROME_MAC_USER_AGENT,
-					},
-					signal,
-				);
-				const finalUrl = validatePublicHttpUrl(metadata.finalUrl);
-				return { url, finalUrl: finalUrl.toString() };
-			} catch (error) {
-				if (signal?.aborted) throw signal.reason ?? error;
-				return { url, finalUrl: undefined };
-			} finally {
-				await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-			}
-		}),
+		urls.map(async (url) => ({ url, finalUrl: await resolveOneGroundingRedirect(pi, url, signal) })),
 	);
 
 	let resolvedOutput = output;
 	let resolved = 0;
-	for (const resolution of resolutions) {
-		if (!resolution.finalUrl) continue;
-		resolvedOutput = resolvedOutput.split(resolution.url).join(resolution.finalUrl);
-		resolved++;
+	let unresolved = 0;
+	for (const { url, finalUrl } of resolutions) {
+		if (finalUrl) {
+			resolvedOutput = resolvedOutput.split(url).join(finalUrl);
+			resolved++;
+		} else {
+			unresolved++;
+		}
 	}
-	return { output: resolvedOutput, resolved };
+	return { output: resolvedOutput, resolved, unresolved };
 }
 
 export default function webAccessKit(pi: ExtensionAPI) {
+	sweepStaleTempDirs().catch(() => undefined);
+	pi.on("session_shutdown", () => {
+		for (const directory of trackedTempDirs) rm(directory, { recursive: true, force: true }).catch(() => undefined);
+		trackedTempDirs.length = 0;
+	});
+
 	pi.on("before_agent_start", async (event) => {
 		return {
 			systemPrompt: `${event.systemPrompt}\nCurrent local date : ${formatCurrentLocalDate()}`,
@@ -285,7 +410,26 @@ export default function webAccessKit(pi: ExtensionAPI) {
 		async execute(_toolCallId, params, signal) {
 			const url = validatePublicHttpUrl(params.url);
 			const method = params.method ?? "GET";
-			const timeoutSeconds = params.timeout_seconds ?? DEFAULT_FETCH_TIMEOUT_SECONDS;
+			const timeoutSeconds = params.timeout_seconds ?? fetchTimeout();
+			const maxBytes = fetchMaxBytes();
+			const ua = userAgent();
+			const retries = fetchRetries();
+			const ttl = cacheTtlSeconds();
+			const cacheKey = `${method}|${url.toString()}`;
+
+			if (method === "GET" && ttl > 0) {
+				const hit = fetchCache.get(cacheKey);
+				if (hit) {
+					if (hit.expiresAt > Date.now()) {
+						return {
+							content: [{ type: "text", text: hit.text }],
+							details: { ...hit.details, cached: true },
+						};
+					}
+					fetchCache.delete(cacheKey);
+				}
+			}
+
 			const directory = await mkdtemp(join(tmpdir(), "pi-web-fetch-page-"));
 			const outputPath = join(directory, "response");
 			let retainFetchDirectory = false;
@@ -297,15 +441,16 @@ export default function webAccessKit(pi: ExtensionAPI) {
 					{
 						method,
 						timeoutSeconds,
-						maxBytes: FETCH_MAX_BYTES,
+						maxBytes,
 						outputPath,
-						userAgent: CHROME_MAC_USER_AGENT,
+						userAgent: ua,
+						retries,
 					},
 					signal,
 				);
 				const fileStats = await stat(outputPath);
-				if (fileStats.size > FETCH_MAX_BYTES) {
-					throw new Error(`response exceeded the ${formatSize(FETCH_MAX_BYTES)} download limit`);
+				if (fileStats.size > maxBytes) {
+					throw new Error(`response exceeded the ${formatSize(maxBytes)} download limit`);
 				}
 				const contentType = metadata.contentType.toLowerCase();
 				const isText =
@@ -319,12 +464,17 @@ export default function webAccessKit(pi: ExtensionAPI) {
 
 				let text: string;
 				let truncation: Awaited<ReturnType<typeof truncateForTool>>;
+				let extractionFallback = false;
 				if (isText) {
-					const body = await readFile(outputPath, "utf8");
-					const normalizedBody = contentType.includes("html")
-						? await htmlToMarkdown(body, metadata.finalUrl || url.toString())
-						: body;
-					truncation = await truncateForTool(normalizedBody, "pi-web-fetch-page-full");
+					const body = await readFile(outputPath);
+					const decoded = method === "HEAD" ? "" : decodeBody(body, metadata.contentType);
+					if (contentType.includes("html")) {
+						const converted = await htmlToMarkdown(decoded, metadata.finalUrl || url.toString());
+						extractionFallback = converted.fallback;
+						truncation = await truncateForTool(converted.content, "pi-web-fetch-page-full");
+					} else {
+						truncation = await truncateForTool(decoded, "pi-web-fetch-page-full");
+					}
 					text = truncation.text || "[Empty response body]";
 				} else {
 					truncation = { text: "", truncated: false, fullOutputPath: outputPath };
@@ -340,11 +490,24 @@ export default function webAccessKit(pi: ExtensionAPI) {
 					method,
 					fullOutputPath: truncation.fullOutputPath,
 					truncated: truncation.truncated,
+					extractionFallback: extractionFallback || undefined,
 				};
 				const summary = `HTTP ${details.status} ${details.finalUrl}\nContent-Type: ${details.contentType || "unknown"}\nBytes: ${details.bytes}`;
+				const responseText = `${summary}\n\n${text}`;
+
+				if (method === "GET" && isText && !truncation.truncated && ttl > 0) {
+					fetchCache.set(cacheKey, { expiresAt: Date.now() + ttl * 1000, text: responseText, details });
+					const maxEntries = cacheMaxEntries();
+					while (fetchCache.size > maxEntries) {
+						const oldestKey = fetchCache.keys().next().value;
+						if (oldestKey === undefined) break;
+						fetchCache.delete(oldestKey);
+					}
+				}
+
 				retainFetchDirectory = !isText;
 				return {
-					content: [{ type: "text", text: `${summary}\n\n${text}` }],
+					content: [{ type: "text", text: responseText }],
 					details,
 				};
 			} catch (error) {
@@ -372,33 +535,41 @@ export default function webAccessKit(pi: ExtensionAPI) {
 		parameters: WebSearchParams,
 		async execute(_toolCallId, params, signal, onUpdate) {
 			const startedAt = Date.now();
-			const timeoutSeconds = params.timeout_seconds ?? DEFAULT_SEARCH_TIMEOUT_SECONDS;
+			const timeoutSeconds = params.timeout_seconds ?? searchTimeout();
 			onUpdate?.({
 				content: [{ type: "text", text: "Searching Google through Antigravity CLI..." }],
 				details: { query: params.query },
 			});
 
 			const agyStartedAt = Date.now();
-			const result = await pi.exec(
-				"agy",
-				[
-					"--model",
-					SEARCH_MODEL,
-					"--sandbox",
-					"--mode",
-					"plan",
-					"--print-timeout",
-					`${timeoutSeconds}s`,
-					"--print",
-					searchPrompt(params),
-				],
-				{ signal, timeout: (timeoutSeconds + 10) * 1000 },
-			);
-			const agyDurationMs = Date.now() - agyStartedAt;
-			if (result.code !== 0) {
-				const reason = result.stderr.trim() || result.stdout.trim() || `agy exited with code ${result.code}`;
+			let result;
+			try {
+				result = await execWithRetry(
+					pi,
+					"agy",
+					[
+						"--model",
+						searchModel(),
+						"--sandbox",
+						"--mode",
+						"plan",
+						"--print-timeout",
+						`${timeoutSeconds}s`,
+						"--print",
+						searchPrompt(params),
+					],
+					{
+						signal,
+						timeout: (timeoutSeconds + 10) * 1000,
+						retries: searchRetries(),
+						isTransient: (candidate) => AGY_TRANSIENT_ERROR.test(`${candidate.stderr} ${candidate.stdout}`.trim()),
+					},
+				);
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
 				throw new Error(`web_search failed: ${reason}`);
 			}
+			const agyDurationMs = Date.now() - agyStartedAt;
 
 			const output = result.stdout.trim();
 			if (!output) throw new Error("web_search failed: agy returned no output; check Antigravity authentication");
@@ -416,10 +587,11 @@ export default function webAccessKit(pi: ExtensionAPI) {
 				query: params.query,
 				goal: params.goal?.trim() || undefined,
 				engine: "antigravity-google-search",
-				model: SEARCH_MODEL,
+				model: searchModel(),
 				durationMs: Date.now() - startedAt,
 				agyDurationMs,
 				resolvedGroundingUrls: resolved.resolved,
+				unresolvedGroundingUrls: resolved.unresolved,
 				truncated: truncated.truncated,
 				fullOutputPath: truncated.fullOutputPath,
 			};

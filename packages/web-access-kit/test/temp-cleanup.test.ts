@@ -1,3 +1,8 @@
+// These tests exercise temporary-file lifecycle with deterministic fake exec
+// output, so disable the in-session fetch cache to avoid cross-test collisions
+// on the shared example URL.
+process.env.PI_WEB_FETCH_CACHE_TTL_SECONDS = "0";
+
 import assert from "node:assert/strict";
 import { access, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";

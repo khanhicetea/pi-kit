@@ -31,7 +31,7 @@
     "typebox": "*"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "test": "tsx --test test/*.test.ts",
@@ -39,7 +39,6 @@
   },
   "dependencies": {
     "defuddle": "^0.19.1",
-    "linkedom": "^0.18.13",
     "node-html-markdown": "^2.0.0"
   },
   "devDependencies": {

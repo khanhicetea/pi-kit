@@ -3,7 +3,32 @@ import { BlockList, isIP } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_MAX_REDIRECTS = 10;
+const DEFAULT_RETRIES = 1;
 const META_PREFIX = "__WEB_ACCESS_KIT_META__";
+
+/**
+ * Privileged ports (< 1024) are rejected except for the standard web ports 80
+ * and 443. These additional high-numbered ports belong to databases, caches,
+ * message brokers, remote-admin, and container services. Blocking them prevents
+ * curl from speaking HTTP to a non-HTTP service on an otherwise-public host
+ * (protocol-confusion abuse) even though the IP itself is public.
+ */
+const BLOCKED_PORTS = new Set<number>([
+	1883, // MQTT
+	2049, // NFS
+	2375, 2376, // Docker daemon (unauthenticated / TLS)
+	3389, // RDP
+	4444, // Metasploit / common backdoor
+	1433, 1521, // MS SQL, Oracle
+	3306, 5432, // MySQL, PostgreSQL
+	6379, // Redis
+	9200, 9300, // Elasticsearch
+	11211, // Memcached
+	27017, // MongoDB
+]);
+
+/** Curl failure messages that are safe to retry for idempotent GET/HEAD. */
+const TRANSIENT_CURL_ERROR = /timed ?out|timeout|connection|resolve|reset|ssl|partial|temporary|could not|broken pipe|recv/i;
 
 const BLOCKED_IPV4 = new BlockList();
 for (const [network, prefix] of [
@@ -52,6 +77,8 @@ export interface PublicCurlOptions {
 	userAgent: string;
 	maxRedirects?: number;
 	resolveAddresses?: AddressResolver;
+	/** Extra attempts for transient failures of idempotent GET/HEAD. */
+	retries?: number;
 }
 
 export type AddressResolver = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
@@ -78,6 +105,20 @@ export function isPublicIpAddress(rawAddress: string): boolean {
 	return !BLOCKED_GLOBAL_IPV6.check(address, "ipv6");
 }
 
+function validatePort(url: URL): void {
+	if (!url.port) return; // scheme default port (80 / 443) is always allowed
+	const port = Number.parseInt(url.port, 10);
+	if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+		throw new Error(`Blocked invalid network port: ${url.port}`);
+	}
+	if (port < 1024 && port !== 80 && port !== 443) {
+		throw new Error(`Blocked privileged port ${port}: only 80 and 443 are permitted below 1024`);
+	}
+	if (BLOCKED_PORTS.has(port)) {
+		throw new Error(`Blocked non-web service port ${port} to prevent protocol-confusion abuse`);
+	}
+}
+
 export function validatePublicHttpUrl(rawUrl: string | URL): URL {
 	let url: URL;
 	try {
@@ -92,6 +133,7 @@ export function validatePublicHttpUrl(rawUrl: string | URL): URL {
 	if (url.username || url.password) {
 		throw new Error("Credentials in URLs are not supported because tool arguments are stored in the session");
 	}
+	validatePort(url);
 	return url;
 }
 
@@ -168,21 +210,80 @@ export async function resolvePublicTarget(
 }
 
 export function parseCurlMetadata(stdout: string): CurlMetadata {
-	const line = stdout
-		.split("\n")
-		.reverse()
-		.find((candidate) => candidate.startsWith(META_PREFIX));
-	if (!line) throw new Error("curl completed without response metadata");
+	const metaLines = stdout.split("\n").filter((line) => line.startsWith(META_PREFIX));
+	if (metaLines.length === 0) throw new Error("curl completed without response metadata");
+	// The legitimate metadata line is the only stdout line curl writes (the body
+	// goes to --output). More than one metadata-prefixed line means a header or
+	// URL value tried to forge metadata — refuse the ambiguous response.
+	if (metaLines.length > 1) throw new Error("curl metadata contained an unexpected additional metadata line");
 
-	const [statusText, contentType = "", finalUrl = "", redirectUrl = ""] = line
-		.slice(META_PREFIX.length)
-		.split("\t");
-	return {
-		status: Number.parseInt(statusText, 10) || 0,
-		contentType,
-		finalUrl,
-		redirectUrl,
-	};
+	const fields = metaLines[0].slice(META_PREFIX.length).split("\t");
+	if (fields.length !== 4) throw new Error("curl metadata was malformed (expected 4 tab-separated fields)");
+
+	const [statusText, contentType, finalUrl, redirectUrl] = fields;
+	if (/[\r\n\t]/.test(`${statusText}${contentType}${finalUrl}${redirectUrl}`)) {
+		throw new Error("curl metadata contained an unexpected control character");
+	}
+	const status = Number.parseInt(statusText, 10);
+	if (!Number.isInteger(status) || status < 100 || status > 599) {
+		throw new Error(`curl returned an invalid HTTP status: ${statusText}`);
+	}
+	return { status, contentType, finalUrl, redirectUrl };
+}
+
+/** Resolve after `ms`, rejecting early if `signal` aborts. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Request aborted"));
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(resolve, ms);
+		if (signal) {
+			signal.addEventListener(
+				"abort",
+				() => {
+					clearTimeout(timer);
+					reject(signal.reason ?? new Error("Request aborted"));
+				},
+				{ once: true },
+			);
+		}
+	});
+}
+
+export interface ExecResultLike {
+	code: number;
+	stdout: string;
+	stderr: string;
+	killed: boolean;
+}
+
+/**
+ * Run a command with bounded retry for transient failures of idempotent
+ * operations. Returns only on success (code 0); otherwise throws the trimmed
+ * stderr/stdout reason.
+ */
+export async function execWithRetry(
+	pi: ExtensionAPI,
+	command: string,
+	args: string[],
+	options: {
+		signal?: AbortSignal;
+		timeout?: number;
+		retries?: number;
+		isTransient?: (result: ExecResultLike) => boolean;
+	},
+): Promise<ExecResultLike> {
+	const maxAttempts = Math.max(1, (options.retries ?? 0) + 1);
+	const isTransient = options.isTransient ?? ((result) => result.code !== 0);
+	for (let attempt = 0; attempt < maxAttempts; attempt++) {
+		if (options.signal?.aborted) throw options.signal.reason ?? new Error("Request aborted");
+		if (attempt > 0) await abortableSleep(Math.min(2000, 250 * 2 ** (attempt - 1)), options.signal);
+		const result = (await pi.exec(command, args, { signal: options.signal, timeout: options.timeout })) as ExecResultLike;
+		if (result.code === 0) return result;
+		const reason = result.stderr.trim() || result.stdout.trim() || `${command} exited with code ${result.code}`;
+		if (!isTransient(result) || attempt >= maxAttempts - 1) throw new Error(reason);
+	}
+	// Unreachable: every iteration either returns or throws.
+	throw new Error(`${command} exited unexpectedly`);
 }
 
 /** Run curl one hop at a time, validating and DNS-pinning every destination. */
@@ -195,6 +296,7 @@ export async function runPublicCurl(
 	const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
 	const deadline = Date.now() + options.timeoutSeconds * 1000;
 	let currentUrl = validatePublicHttpUrl(rawUrl);
+	const initialProtocol = currentUrl.protocol;
 
 	for (let redirectCount = 0; ; redirectCount++) {
 		if (signal?.aborted) throw signal.reason ?? new Error("Request aborted");
@@ -202,6 +304,13 @@ export async function runPublicCurl(
 		if (remainingMs <= 0) throw new Error(`curl timed out after ${options.timeoutSeconds} seconds`);
 
 		const target = await resolvePublicTarget(currentUrl, options.resolveAddresses, signal, deadline);
+		// Prevent an HTTPS request from being downgraded to cleartext HTTP via a
+		// redirect, which would expose any query/path content to the network. Run
+		// after the destination IP is validated so a redirect to a private address
+		// is still reported as the more specific SSRF block.
+		if (initialProtocol === "https:" && currentUrl.protocol === "http:") {
+			throw new Error("Blocked insecure redirect: an HTTPS request cannot downgrade to HTTP");
+		}
 		const afterDnsRemainingMs = deadline - Date.now();
 		if (afterDnsRemainingMs <= 0) throw new Error(`curl timed out after ${options.timeoutSeconds} seconds`);
 		const remainingSeconds = Math.max(1, Math.ceil(afterDnsRemainingMs / 1000));
@@ -213,7 +322,10 @@ export async function runPublicCurl(
 			"--globoff",
 			"--silent",
 			"--show-error",
-			"--compressed",
+			// Intentionally NOT using --compressed: curl's --max-filesize does not
+			// apply to auto-decompressed transfers, so a gzip bomb would be written
+			// fully to --output before any post-download size check could run.
+			// Accepting identity transfers keeps the byte cap effective.
 			"--proto",
 			"=http,https",
 			"--noproxy",
@@ -235,14 +347,12 @@ export async function runPublicCurl(
 		if (options.method === "HEAD") args.push("--head");
 		args.push(currentUrl.toString());
 
-		const result = await pi.exec("curl", args, {
+		const result = await execWithRetry(pi, "curl", args, {
 			signal,
 			timeout: Math.max(1_000, deadline - Date.now() + 5_000),
+			retries: options.method === "GET" || options.method === "HEAD" ? options.retries ?? DEFAULT_RETRIES : 0,
+			isTransient: (candidate) => candidate.killed || TRANSIENT_CURL_ERROR.test(`${candidate.stderr}\n${candidate.stdout}`.trim()),
 		});
-		if (result.code !== 0) {
-			const reason = result.stderr.trim() || `curl exited with code ${result.code}`;
-			throw new Error(reason);
-		}
 
 		const metadata = parseCurlMetadata(result.stdout);
 		if (!metadata.redirectUrl) return metadata;
