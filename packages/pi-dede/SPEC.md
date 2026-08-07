@@ -28,7 +28,7 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 5. **Small outputs:** children are instructed to use at most 400 words; model-visible output is capped at 4 KiB per child and 12 KiB aggregate.
 6. **Least privilege:** read-only excludes `bash`; mutation-capable work runs alone.
 7. **Bounded continuation:** a timed-out child keeps its identity and may receive only a 30–180 second solo extension.
-8. **No recursive delegation:** children load no extensions and receive `PI_DEDE_DEPTH=1`.
+8. **No recursive delegation:** children may use normal Pi extension discovery, but receive `PI_DEDE_DEPTH=1` so pi-dede does not register recursively.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
 10. **Terminal-aware execution:** when the master runs in a Herdr pane, children are shown in a temporary horizontal split with vertical child panes without changing their headless protocol.
 11. **Progressive orchestration guidance:** the package exposes a parent-only skill that teaches the delegation gate, compact lane contracts, distinct fan-out, verification, and bounded recipes without widening the runtime workflow surface.
@@ -96,7 +96,7 @@ Validation completes before temporary files, permits, or child processes are cre
 
 Effective thinking precedence is explicit request, profile sidecar configuration, then built-in profile default. The master's thinking level is not inherited.
 
-Effective model precedence is explicit request, profile sidecar configuration, then master model. Children do not inherit the master's extensions. A provider registered through an extension is accepted only when `additionalArgs` explicitly loads a child extension with `-e`/`--extension`; otherwise it is rejected before launch. The error tells the caller how to load the extension or configure a compatible model and includes a bounded list of catalog candidates.
+Effective model precedence is explicit request, profile sidecar configuration, then master model. Children are separate Pi processes but retain normal extension discovery. A provider registered through an installed project/global extension is therefore allowed without extra arguments; an extension loaded only in the master can be loaded explicitly through `additionalArgs` with `-e`/`--extension`. If child extension discovery is disabled with `--no-extensions` and no explicit extension is supplied, validation rejects the setup before launch.
 
 Effective environment precedence is inherited master process environment, global profile sidecar environment, trusted-project profile sidecar environment, explicit `agents[].env`, then pi-dede's internal control fields. Profile environments merge by variable name instead of replacing the complete map.
 
@@ -252,7 +252,7 @@ Prompts use a mode-`0700` run directory and mode-`0600` files. Herdr launch mani
 - more than three active children;
 - parallel or mixed read/write runs;
 - inheritance of the master's in-memory resource/configuration state;
-- extension/custom tools in children;
+- inheritance of the master's in-memory extension/custom-tool state;
 - filesystem/network sandboxing;
 - hidden reasoning persistence.
 

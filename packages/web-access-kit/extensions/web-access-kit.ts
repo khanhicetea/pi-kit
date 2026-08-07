@@ -131,6 +131,15 @@ function normalizeMarkdown(markdown: string): string {
 		.trim();
 }
 
+/** Remove embedded base64 images before Markdown is returned or persisted. */
+export function stripBase64DataImages(markdown: string): string {
+	const dataImage = String.raw`data:image\/[a-z0-9.+-]+(?:;[a-z0-9.+-]+=[^;,\s]*)*;base64,[a-z0-9+/=]+`;
+	return markdown
+		.replace(new RegExp(String.raw`!\[([^\]]*)\]\(\s*<?${dataImage}>?(?:\s+["'][^"']*["'])?\s*\)`, "gi"), "$1")
+		.replace(new RegExp(String.raw`<img\b[^>]*\bsrc\s*=\s*(["'])${dataImage}\1[^>]*>`, "gi"), "")
+		.replace(new RegExp(dataImage, "gi"), "");
+}
+
 /** Extract the main webpage content and convert it to compact Markdown. */
 async function htmlToMarkdown(html: string, url: string): Promise<string> {
 	try {
@@ -142,7 +151,7 @@ async function htmlToMarkdown(html: string, url: string): Promise<string> {
 			markdown: true,
 			useAsync: false,
 		});
-		const content = normalizeMarkdown(result.content ?? "");
+		const content = normalizeMarkdown(stripBase64DataImages(result.content ?? ""));
 		if (content) return content;
 	} catch {
 		// Preserve the previous converter as a local, no-network fallback for
@@ -157,7 +166,7 @@ async function htmlToMarkdown(html: string, url: string): Promise<string> {
 		useInlineLinks: true,
 		ignore: ["script", "style", "noscript", "template", "svg", "iframe", "canvas", "video", "audio", "form"],
 	});
-	return normalizeMarkdown(fallback.translate(html));
+	return normalizeMarkdown(stripBase64DataImages(fallback.translate(html)));
 }
 
 function formatCurrentLocalDate(now = new Date()): string {

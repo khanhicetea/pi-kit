@@ -204,7 +204,7 @@ Configuration is read on every delegation. Project configuration is ignored unle
 
 ### Extension-provided master models
 
-Children do not inherit the master's loaded extensions. To use an extension-registered provider in children, load the provider extension explicitly with `additionalArgs`, for example `["-e", "/absolute/path/to/provider-extension.ts"]`. Otherwise, configure a built-in child-compatible model in `pi-dede.json` or set `agents[].model`. Validation rejects extension-only providers when no child extension is configured and includes bounded catalog candidates in the error.
+Children are separate Pi processes, but retain Pi's normal extension discovery. An extension-registered provider is therefore available when the extension is installed in the child's normal project/global package set—for example, an installed `pi-multi-codex` provider. If the extension is loaded only in the master, load it explicitly with `additionalArgs`, such as `["-e", "/absolute/path/to/provider-extension.ts"]`. Do not pass `--no-extensions` unless the provider is explicitly loaded in the same arguments; validation rejects that conflicting setup.
 
 ## Limits
 

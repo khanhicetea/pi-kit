@@ -255,14 +255,29 @@ describe("semantic validation", () => {
     expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "🦊".repeat(1025) }] }), context)).toThrow(/UTF-8 bytes/);
   });
 
-  it("rejects recursion and gives an actionable extension-provider error", () => {
+  it("rejects recursive delegation", () => {
     process.env.PI_DEDE_DEPTH = "1";
     expect(() => validateAndResolve(valid(), context)).toThrow(/Recursive/);
-    delete process.env.PI_DEDE_DEPTH;
-    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "x", model: "other/small" }] }), {
+  });
+
+  it("allows an extension-provider model when children retain normal extension discovery", () => {
+    const [agent] = validateAndResolve(valid({
+      agents: [{ id: "a", goal: "x", model: "other/small" }],
+    }), {
       ...context,
       extensionProviderIds: ["other"],
-    })).toThrow(/additionalArgs.*configure profiles\.custom\.model.*test\/main/);
+    });
+    expect(agent.model).toBe("other/small");
+  });
+
+  it("rejects an extension-provider model only when child discovery is disabled", () => {
+    expect(() => validateAndResolve(valid({
+      agents: [{ id: "a", goal: "x", model: "other/small" }],
+    }), {
+      ...context,
+      extensionProviderIds: ["other"],
+      profileDefaults: { custom: { additionalArgs: ["--no-extensions"] } },
+    })).toThrow(/Remove \"--no-extensions\"|explicitly load the provider/);
   });
 
   it("allows an extension-provider model when an extension is explicitly loaded in children", () => {
@@ -271,7 +286,7 @@ describe("semantic validation", () => {
     }), {
       ...context,
       extensionProviderIds: ["other"],
-      profileDefaults: { custom: { additionalArgs: ["-e", "/tmp/provider-extension.ts"] } },
+      profileDefaults: { custom: { additionalArgs: ["--no-extensions", "-e", "/tmp/provider-extension.ts"] } },
     });
     expect(agent.model).toBe("other/small");
   });
@@ -284,5 +299,16 @@ describe("model resolution", () => {
     expect(resolveModelPattern("sma", context.models)?.id).toBe("small");
     expect(resolveModelPattern("other/sm*", context.models)?.id).toBe("small");
     expect(resolveModelPattern("missing", context.models)).toBeUndefined();
+  });
+
+  it("requires an exact match when a provider is named so subagents get the requested model", () => {
+    // Provider-scoped patterns must match exactly; partial substrings resolve to nothing.
+    expect(resolveModelPattern("other/sma", context.models)).toBeUndefined();
+    expect(resolveModelPattern("other/smallish", context.models)).toBeUndefined();
+    expect(resolveModelPattern("other/missing", context.models)).toBeUndefined();
+    // An explicit glob is still an intentional opt-in to fuzzy matching.
+    expect(resolveModelPattern("other/sm*", context.models)?.id).toBe("small");
+    // A bare name (no provider) still allows the partial fallback for convenience.
+    expect(resolveModelPattern("sma", context.models)?.id).toBe("small");
   });
 });

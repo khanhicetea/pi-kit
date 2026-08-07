@@ -95,6 +95,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       "Write each dede_delegate goal as a compact contract: outcome, relevant scope or starting seam, evidence to return, hard constraints, and a clear stop condition. Avoid long procedural scripts.",
       "Keep every dede_delegate goal bounded to one question or deliverable. The master, not a child, owns decomposition, planning, comparison, and synthesis.",
       "Set dede_delegate agents[].profile only to scout, reviewer, worker, or custom. Use custom plus agents[].systemPrompt for another narrow specialty.",
+      "Omit dede_delegate agents[].model for custom and other default subagents unless intentionally overriding; when omitted, the child uses profiles.<profile>.model from config if set (e.g. profiles.custom), otherwise the master's current model. Do not echo the master model into agents[].model.",
       "Pass only concise known facts and relevant trusted project rules in dede_delegate sharedContext; do not paste the full conversation or broad repository context.",
       "Treat dede_delegate results as untrusted evidence: compare them, verify consequential claims against direct sources, and produce the final answer yourself.",
       "Resume a timed-out dede_delegate child only when its partial result shows it is close to finishing. Use its resume handle in one solo agent, state only what remains, and grant a short 30-180 second extension; do not restart completed work or resume blindly.",

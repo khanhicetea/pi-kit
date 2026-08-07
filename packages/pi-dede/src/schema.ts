@@ -49,7 +49,10 @@ const AgentSchema = Type.Object(
     })),
     toolPreset: Type.Optional(StringEnum(TOOL_PRESETS, {description: "Use custom when using specific tools param"})),
     tools: Type.Optional(Type.Array(StringEnum(BUILTIN_TOOLS), { maxItems: 7 })),
-    model: Type.Optional(Type.String({ minLength: 1 })),
+    model: Type.Optional(Type.String({
+      minLength: 1,
+      description: "Omit to inherit the configured profile default (profiles.<profile>.model), falling back to the master's current model when no profile config is set. Set only to intentionally override with a specific model.",
+    })),
     thinking: Type.Optional(StringEnum(THINKING_LEVELS)),
     env: Type.Optional(Type.Record(
       Type.String({ pattern: CHILD_ENV_NAME_PATTERN }),
@@ -133,7 +136,11 @@ function preferModel(matches: ModelLike[]): ModelLike | undefined {
   })[0];
 }
 
-/** Resolve with Pi CLI-like exact, glob, then partial matching. */
+/**
+ * Resolve with Pi CLI-like matching. A bare name allows exact, glob, then partial
+ * fallback for convenience. A provider-scoped `provider/id` must match exactly (or
+ * via an explicit glob) so the model handed to a subagent is exactly the one requested.
+ */
 export function resolveModelPattern(pattern: string, models: ModelLike[]): ModelLike | undefined {
   const input = pattern.trim();
   const lower = input.toLowerCase();
@@ -144,11 +151,13 @@ export function resolveModelPattern(pattern: string, models: ModelLike[]): Model
   const slash = input.indexOf("/");
   let candidates = models;
   let modelPattern = input;
+  let providerScoped = false;
   if (slash > 0) {
     const provider = providers.get(input.slice(0, slash).toLowerCase());
     if (provider) {
       candidates = models.filter((model) => model.provider === provider);
       modelPattern = input.slice(slash + 1);
+      providerScoped = true;
     }
   }
 
@@ -160,12 +169,20 @@ export function resolveModelPattern(pattern: string, models: ModelLike[]): Model
     return preferModel(candidates.filter((model) => regex.test(model.id) || regex.test(model.name ?? "")));
   }
 
+  // A named provider pins the catalog entry; do not fall back to a partial substring
+  // match, which could pass a different model to the subagent than the one requested.
+  if (providerScoped) return undefined;
+
   const needle = modelPattern.toLowerCase();
   return preferModel(candidates.filter((model) => model.id.toLowerCase().includes(needle) || model.name?.toLowerCase().includes(needle)));
 }
 
 function explicitlyLoadsChildExtension(args: readonly string[]): boolean {
   return args.some((arg) => arg === "-e" || arg === "--extension" || arg.startsWith("--extension="));
+}
+
+function disablesChildExtensionDiscovery(args: readonly string[]): boolean {
+  return args.some((arg) => arg === "--no-extensions");
 }
 
 function compatibleModelHint(models: readonly ModelLike[], extensionProviders: ReadonlySet<string>): string {
@@ -273,11 +290,14 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     const modelPattern = agent.model ?? profileDefaults?.model;
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
-    if (extensionProviders.has(model.provider) && !explicitlyLoadsChildExtension(additionalArgs)) {
+    if (
+      extensionProviders.has(model.provider) &&
+      disablesChildExtensionDiscovery(additionalArgs) &&
+      !explicitlyLoadsChildExtension(additionalArgs)
+    ) {
       throw new Error(
-        `Model provider ${model.provider} is registered by an extension that is not loaded in isolated children. ` +
-        `Load its extension explicitly with additionalArgs: ["-e", "/absolute/path/to/extension.ts"], ` +
-        `or set ${label}.model/configure profiles.${profile}.model to a built-in provider model.` +
+        `Model provider ${model.provider} is registered by an extension, but child extension discovery is disabled. ` +
+        `Remove "--no-extensions" or explicitly load the provider with additionalArgs: ["-e", "/absolute/path/to/extension.ts"].` +
         compatibleModelHint(context.models, extensionProviders),
       );
     }
