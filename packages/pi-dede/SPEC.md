@@ -1,6 +1,6 @@
-# pi-dede v0.3 Specification
+# pi-dede Specification
 
-**Status:** Implemented contract
+**Status:** Implemented current contract
 
 **Package:** `@khanhicetea/pi-dede`
 
@@ -15,7 +15,7 @@
 
 The master owns decomposition, planning, synthesis, comparison, verification, and the final answer. Children do not plan work for one another and cannot depend on other child results within a run.
 
-A timed-out child may expose one session-scoped resume handle. The master may use it for a deliberate short continuation when partial output indicates the child is close to completion. This reuses the exact child conversation without turning delegation into an automatic retry loop.
+A successfully finished child exposes a session-scoped continuation handle. The master may use it for a later bounded task that directly benefits from the same child's context. The continuation reopens the same Pi session in a fresh RPC process, preserves the child's immutable role and capabilities, and requires mutable repository state to be revalidated. A timed-out child instead exposes a resume handle for a deliberate short completion attempt when partial output indicates it is close to completion.
 
 The extension must discourage delegation for first-pass orientation, one-file/symbol lookups, planning, synthesis, overlapping tasks, and work likely finishable in roughly two local tool calls.
 
@@ -26,8 +26,8 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 3. **Bounded synchronous runs:** 180-second default, 1800-second maximum.
 4. **Bounded reasoning:** profile defaults are `low` or `medium`, not inherited from the master.
 5. **Small outputs:** children are instructed to use at most 400 words; model-visible output is capped at 4 KiB per child and 12 KiB aggregate.
-6. **Least privilege:** read-only excludes `bash`; at most one mutation-capable child runs per call.
-7. **Bounded continuation:** a timed-out child keeps its identity and may receive only a 30–180 second solo extension.
+6. **Least privilege:** read-only excludes `bash`; at most one mutation-capable child runs per call, and a runtime-wide mutation lease serializes writers across concurrent calls.
+7. **Bounded lineage reuse:** a successful child may receive a related new bounded task with a normal deadline; a timed-out child may receive only a 30–180 second solo completion attempt.
 8. **No recursive delegation:** children may use normal Pi extension discovery, but receive `PI_DEDE_DEPTH=1` so pi-dede does not register recursively.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
 10. **Bidirectional headless transport:** children run `pi --mode rpc` so the master delivers the task, steers a child near its deadline, and aborts gracefully over stdin/stdout, reserving process-tree termination for the hard deadline. A soft deadline warning always precedes the hard kill.
@@ -50,10 +50,11 @@ type BuiltinTool = "read" | "grep" | "find" | "ls" | "bash" | "edit" | "write";
 
 interface AgentRequest {
   id: string;                 // /^[a-z][a-z0-9-]{0,31}$/
-  profile?: Profile;          // default: custom; forbidden on resume
-  goal: string;               // bounded assignment, or only what remains on resume
+  profile?: Profile;          // default: custom; forbidden on continue/resume
+  goal: string;               // bounded assignment; only what remains on resume
+  continueFrom?: string;      // handle from a successfully finished child
   resume?: string;            // handle from a timed-out child
-  systemPrompt?: string;      // narrow role constraints; forbidden on resume
+  systemPrompt?: string;      // narrow role constraints; forbidden on continue/resume
   toolPreset?: ToolPreset;
   tools?: BuiltinTool[];      // exact list; selects the custom preset
   model?: string;
@@ -70,7 +71,7 @@ interface DelegateRequest {
 }
 ```
 
-Unknown fields are rejected. A request containing `resume` must contain exactly one agent. The handle must be available in the current master session runtime. A resumed agent keeps the old profile, system prompt, model, thinking, environment overrides, and tools; `profile`, `systemPrompt`, `toolPreset`, `tools`, `model`, `thinking`, and `env` overrides are rejected. Only `id`, `goal`, and `timeoutSeconds` may change.
+Unknown fields are rejected. `continueFrom` and `resume` are mutually exclusive, and the same lineage handle may appear only once per request. A request containing `resume` must contain exactly one agent. Handles must be available in the current master runtime and are claimed atomically, all-or-nothing. Continued and resumed agents keep the old profile, system prompt, model, thinking, environment overrides, additional arguments, and tools; `profile`, `systemPrompt`, `toolPreset`, `tools`, `model`, `thinking`, and `env` overrides are rejected. Only `id`, `goal`, and `timeoutSeconds` may change. A continuation may use the normal 30–1800 second deadline; a resume remains limited to 30–180 seconds.
 
 String limits use UTF-8 bytes:
 
@@ -126,9 +127,11 @@ One abort-aware FIFO semaphore belongs to each loaded extension runtime:
 MAX_ACTIVE_CHILDREN = 3
 ```
 
-The limit applies across simultaneous tool calls. An agent requests a permit only after its secure prompt files are ready. Results preserve request order, regardless of process completion order.
+The process limit applies across simultaneous tool calls. An agent requests a permit only after its secure prompt files are ready. A separate one-permit mutation semaphore applies across simultaneous calls so two writers cannot clobber the shared workspace. Results preserve request order, regardless of process completion order.
 
-There are no dependency graphs, child-to-child messages, planner handoffs, automatic retries, or background runs in v0.2. A short resume is initiated only by a new master tool call.
+There are no dependency graphs, child-to-child messages, planner handoffs, automatic retries, or background runs. Related continuation and short resume are initiated only by a new master tool call.
+
+Successful continuation capabilities are in-memory and scoped to the current master runtime. They expire after 30 idle minutes and only the 12 most recently available successful lineages are retained. Timeout-resume capabilities are not subject to that successful-lineage LRU. Shutdown, reload, session replacement, or master fork clears all capabilities; underlying child session files remain available for normal Pi inspection.
 
 ## 7. Child execution
 
@@ -146,7 +149,7 @@ pi --mode rpc --no-approve \
 
 The task assignment is delivered as an RPC `prompt` command over the child's stdin; it never appears in process arguments. The child stays headless and uses no terminal multiplexer. The master reads the LF-delimited JSONL event stream from stdout for state (final text, usage, activity) and writes control commands back over stdin: the initial `prompt`, a `steer` warning near the deadline, and an `abort` at the deadline. Extension UI dialogs emitted by the child are auto-cancelled so an autonomous child can never block waiting for a human.
 
-The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation, and sends a continuation `prompt`. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
+The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A continuation or resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation, and sends a new RPC `prompt`. A continuation prompt frames a new related task and requires re-reading mutable files, diffs, or tests; a resume prompt frames only unfinished work. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, continuation-index, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
 
 The system prompt tells every child to:
 
@@ -162,7 +165,7 @@ Workers additionally report files changed and verification within the same word 
 
 ## 8. Timeouts and cancellation
 
-Initial child timeout precedence is explicit agent value, run default, then 180 seconds. Accepted values are 30 through 1800 seconds.
+Initial and successfully continued child timeout precedence is explicit agent value, run default, then 180 seconds. Accepted values are 30 through 1800 seconds.
 
 Resume timeout precedence is explicit agent value, run default, then 60 seconds. A resume is rejected above 180 seconds and must still meet the 30-second minimum.
 
@@ -196,8 +199,11 @@ interface ChildResult {
   tools: BuiltinTool[];
   timeoutSeconds: number;
   sessionId?: string;         // present after session allocation; inspect with pi --session <id>
+  continuedFrom?: string;
+  continuationIndex?: number;
+  continuationHandle?: string; // present after successful settlement
   resumedFrom?: string;
-  resumeHandle?: string;      // present when short continuation remains available
+  resumeHandle?: string;      // present when short completion remains available
   finalText: string;
   durationMs: number;
   usage: ChildUsage;
@@ -228,7 +234,7 @@ Larger final text is stored in a mode-`0600` session artifact removed at session
 
 ## 11. TUI contract
 
-The call view shows the master-owned objective, mode, count, profile, tool preset, timeout, and bounded goal preview. Resume calls are labeled `short resume`. While running, the header separates done, running, and queued counts and shows aggregate elapsed time plus `Esc to cancel`; each child row shows a status-specific icon, profile, resume state, model, thinking, elapsed/deadline, and latest bounded activity. Timed-out and cancelled states are visually distinct from failures. Timed-out expanded results display the handle and 30–180 second policy. Answer deltas are never rendered.
+The call view shows the master-owned objective, mode, count, profile, tool preset, timeout, and bounded goal preview. Successful reuse calls are labeled `related continuation`; timeout recovery calls are labeled `short resume`. While running, the header separates done, running, and queued counts and shows aggregate elapsed time plus `Esc to cancel`; each child row shows a status-specific icon, profile, resume state, model, thinking, elapsed/deadline, and latest bounded activity. Timed-out and cancelled states are visually distinct from failures. Timed-out expanded results display the handle and 30–180 second policy. Answer deltas are never rendered.
 
 Collapsed final output shows aggregate outcome/usage, one compact answer preview, the inspectable session ID, and usage/duration per child. Expanded output shows aggregate totals, assignment, budget, session ID with the `pi --session <id>` command, the latest bounded activity with omitted-event disclosure, errors, Markdown result, artifact path, and usage.
 
@@ -247,9 +253,9 @@ Prompts use a mode-`0700` run directory and mode-`0600` files. The task assignme
 - planner profile or in-run dependency DAGs;
 - background agents or result notifications;
 - recursive delegation;
-- child session reuse except a master-approved short continuation after timeout;
+- arbitrary session-ID reuse, role handoff, clone/fork branching, or cross-master-runtime continuation;
 - more than three active children;
-- two or more mutation-capable children in a single run;
+- two or more mutation-capable children in a single run or concurrently across calls;
 - inheritance of the master's in-memory resource/configuration state;
 - inheritance of the master's in-memory extension/custom-tool state;
 - filesystem/network sandboxing;
@@ -257,7 +263,7 @@ Prompts use a mode-`0700` run directory and mode-`0600` files. The task assignme
 
 ## 14. Deferred work
 
-Evaluate only after v0.2 behavior is measured:
+Evaluate only after the current bounded behavior is measured:
 
 1. in-process SDK children for provider compatibility and lower startup cost;
 2. background execution if synchronous cache expiry remains material under the 180-second default;

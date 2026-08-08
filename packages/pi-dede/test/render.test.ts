@@ -56,6 +56,13 @@ describe("TUI rendering", () => {
     }, theme, {}).render(200).join("\n");
     expect(resume).toContain("finish · existing profile · existing capabilities · 60s");
     expect(resume).not.toContain("finish · custom");
+
+    const continuation = renderDedeCall({
+      objective: "Inspect a related path",
+      agents: [{ id: "followup", continueFrom: "dede_continue", goal: "Inspect the related path and stop" }],
+    }, theme, {}).render(200).join("\n");
+    expect(continuation).toContain("related continuation · 1 agent");
+    expect(continuation).toContain("followup · existing profile · existing capabilities · 180s · continue dede_continue");
   });
 
   it("shows the inspectable session ID in collapsed and expanded results", () => {
@@ -76,6 +83,8 @@ describe("TUI rendering", () => {
         tools: ["read"],
         timeoutSeconds: 120,
         sessionId,
+        continuationHandle: "dede_continue",
+        continuationIndex: 0,
         finalText: "Done",
         durationMs: 1200,
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 },
@@ -88,6 +97,7 @@ describe("TUI rendering", () => {
 
     const expanded = renderDedeResult({ details }, { expanded: true }, theme, { args: {} }).render(200).join("\n");
     expect(expanded).toContain(`Session: ${sessionId} · inspect with pi --session ${sessionId}`);
+    expect(expanded).toContain("Related continuation: dede_continue · same session and capabilities");
   });
 
   it("distinguishes timeout state and bounds expanded activity history", () => {

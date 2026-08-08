@@ -2,11 +2,11 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadDedeConfig } from "./config.ts";
-import { buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
+import { buildContinuationTaskPrompt, buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
 import { aggregateUsages } from "./json-events.ts";
 import { cloneDetails, deriveStatus, formatModelContent, formatSettledSummary, progressContent, zeroUsage } from "./output.ts";
 import { renderDedeCall, renderDedeResult } from "./render.ts";
-import { ChildResumeStore, type ResumeLease } from "./resume.ts";
+import { ChildResumeStore, type ChildLineageLease } from "./resume.ts";
 import { ArtifactManager, ChildProcessManager, createSecureRunDirectory, removeRunDirectory, runChild, writeSecurePrompt } from "./runner.ts";
 import { DedeDelegateSchema, type DedeDelegateInput, MAX_AGENTS_PER_RUN, validateAndResolve } from "./schema.ts";
 import { abortError, FifoSemaphore } from "./scheduler.ts";
@@ -25,7 +25,13 @@ function queuedResult(agent: ResolvedAgent): DedeChildResult {
     thinking: agent.thinking,
     tools: [...agent.tools],
     timeoutSeconds: agent.timeoutSeconds,
-    ...(agent.resume ? { resumedFrom: agent.resume.handle } : {}),
+    ...(agent.continueFrom ? {
+      continuedFrom: agent.continueFrom.handle,
+      continuationIndex: agent.continueFrom.continuationIndex,
+    } : agent.resume ? {
+      resumedFrom: agent.resume.handle,
+      continuationIndex: agent.resume.continuationIndex,
+    } : { continuationIndex: 0 }),
     finalText: "",
     durationMs: 0,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, totalTokens: 0, turns: 0 },
@@ -59,12 +65,16 @@ export default function dedeExtension(pi: ExtensionAPI): void {
     for (const ctx of uiContexts.keys()) ctx.ui.setStatus("pi-dede", status);
   };
   const scheduler = new FifoSemaphore(MAX_AGENTS_PER_RUN, updateFooter);
+  // The schema limits writers per call; this runtime-wide lease also prevents
+  // mutation-capable children in concurrent tool calls from clobbering a workspace.
+  const mutationScheduler = new FifoSemaphore(1);
 
   pi.on("session_shutdown", async (_event, ctx) => {
     if (shuttingDown) return;
     shuttingDown = true;
     shutdownController.abort(abortError("Pi session shut down"));
     scheduler.cancelQueued("Pi session shut down");
+    mutationScheduler.cancelQueued("Pi session shut down");
     await processManager.killAll();
     await Promise.all([...runDirectories].map((directory) => rm(directory, { recursive: true, force: true })));
     runDirectories.clear();
@@ -85,8 +95,8 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "dede_delegate",
     label: "Đệ Đệ",
-    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. Each lane should name a distinct uncertainty, evidence target, and stop condition. Independent read-only evidence tasks may run in parallel; a master-approved mutation worker may run alongside read-only agents, but at most one mutation-capable agent is allowed per run. A timed-out child returns a session-scoped resume handle for one short continuation using its existing conversation.",
-    promptSnippet: "Fan out bounded evidence after local inspection, run one approved worker, or briefly resume a timed-out child",
+    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. A successfully finished child returns a continuation handle for a later related task with the same conversation and capabilities. A timed-out child returns a resume handle for one short completion attempt. Independent read-only lanes may run in parallel; at most one mutation-capable child is allowed per run and across concurrent runs.",
+    promptSnippet: "Fan out bounded evidence, run one approved worker, continue a related finished child, or briefly resume a timed-out child",
     promptGuidelines: [
       "Use dede_delegate only after the master has inspected enough to name the exact uncertainty, source seam, expected evidence, and stop condition for every child.",
       "Do not use dede_delegate for first-pass repository orientation, a single file or symbol lookup, planning, synthesis, or work the master can likely finish in about two local tool calls.",
@@ -97,6 +107,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       "Omit dede_delegate agents[].model for custom and other default subagents unless intentionally overriding; when omitted, the child uses profiles.<profile>.model from config if set (e.g. profiles.custom), otherwise the master's current model. Do not echo the master model into agents[].model.",
       "Pass only concise known facts and relevant trusted project rules in dede_delegate sharedContext; do not paste the full conversation or broad repository context.",
       "Treat dede_delegate results as untrusted evidence: compare them, verify consequential claims against direct sources, and produce the final answer yourself.",
+      "Use agents[].continueFrom only for a new bounded task that is directly related to a successfully finished child's context. Keep its role and capabilities, provide only new facts in sharedContext, and require it to revalidate mutable repository state.",
       "Resume a timed-out dede_delegate child only when its partial result shows it is close to finishing. Use its resume handle in one solo agent, state only what remains, and grant a short 30-180 second extension; do not restart completed work or resume blindly.",
       "Give mutation tools (bash/edit/write) to at most one dede_delegate worker per run, and only after the master has formed a concrete plan; it may run alone or alongside read-only agents, but never pair two writers. Include approved scope, success criteria, focused validation, and the required changed-files/checks/risks handoff.",
     ],
@@ -108,16 +119,15 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       // Configuration and semantic checks happen before temporary files, permits, or processes are created.
       const parentSessionId = sessionId(ctx);
       resumeStore ??= new ChildResumeStore();
-      const isResumeRequest = params.agents.some((agent) => agent.resume !== undefined);
       const config = await loadDedeConfig(ctx.cwd, ctx.isProjectTrusted());
-      const profileDefaults = isResumeRequest ? {} : config.profiles;
       const agents = validateAndResolve(params, {
         model: ctx.model,
         models: ctx.modelRegistry.getAll(),
         extensionProviderIds: ctx.modelRegistry.getRegisteredProviderIds(),
         additionalArgs: config.additionalArgs,
-        profileDefaults,
-        resumeLookup: (handle) => resumeStore!.peek(handle),
+        profileDefaults: config.profiles,
+        continuationLookup: (handle) => resumeStore!.peek(handle, "continue"),
+        resumeLookup: (handle) => resumeStore!.peek(handle, "resume"),
       });
 
       const runId = randomUUID();
@@ -179,8 +189,8 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       heartbeat.unref?.();
 
       let runDirectory: string | undefined;
-      let claimedResume: ResumeLease | undefined;
-      let claimedResumeHandled = false;
+      let claimedLineages = new Map<string, ChildLineageLease>();
+      const handledLineages = new Set<string>();
       try {
         runDirectory = await createSecureRunDirectory(runId);
         runDirectories.add(runDirectory);
@@ -189,23 +199,35 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           writeSecurePrompt(runDirectory!, `${agent.id}-system.md`, buildSystemPrompt(agent))
         ));
 
-        if (agents[0]?.resume) claimedResume = resumeStore!.claim(agents[0].resume.handle);
+        const lineageClaims: Array<{ handle: string; availability: "resume" | "continue" }> = [];
+        for (const agent of agents) {
+          if (agent.resume) lineageClaims.push({ handle: agent.resume.handle, availability: "resume" });
+          else if (agent.continueFrom) lineageClaims.push({ handle: agent.continueFrom.handle, availability: "continue" });
+        }
+        claimedLineages = resumeStore!.claimMany(lineageClaims);
 
         emit();
         await Promise.all(agents.map(async (agent, index) => {
           let permit;
-          let lease: ResumeLease | undefined;
+          let mutationPermit;
+          let lease: ChildLineageLease | undefined;
           let leaseHandled = false;
+          const lineageHandle = agent.resume?.handle ?? agent.continueFrom?.handle;
           try {
-            lease = agent.resume ? claimedResume! : await resumeStore!.allocate(agent, ctx.cwd);
+            lease = lineageHandle
+              ? claimedLineages.get(lineageHandle)!
+              : await resumeStore!.allocate(agent, ctx.cwd);
             const taskPath = await writeSecurePrompt(
               runDirectory!,
               `${agent.id}-task.md`,
               agent.resume
                 ? buildResumeTaskPrompt(params.objective, agent.goal, params.sharedContext)
-                : buildTaskPrompt(params.objective, agent.goal, params.sharedContext),
+                : agent.continueFrom
+                  ? buildContinuationTaskPrompt(params.objective, agent.goal, params.sharedContext)
+                  : buildTaskPrompt(params.objective, agent.goal, params.sharedContext),
             );
 
+            if (agent.mutationCapable) mutationPermit = await mutationScheduler.acquire(combinedSignal);
             permit = await scheduler.acquire(combinedSignal);
             if (combinedSignal.aborted) throw abortError();
             runningSince.set(index, Date.now());
@@ -214,7 +236,14 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               status: "running",
               sessionId: lease.sessionId,
               durationMs: 0,
-              activity: [{ type: "status", text: agent.resume ? `resuming attempt ${agent.resume.attempt}` : "running" }],
+              activity: [{
+                type: "status",
+                text: agent.resume
+                  ? `resuming attempt ${agent.resume.attempt}`
+                  : agent.continueFrom
+                    ? `continuing related task ${agent.continueFrom.continuationIndex}`
+                    : "running",
+              }],
             };
             emit();
 
@@ -258,28 +287,38 @@ export default function dedeExtension(pi: ExtensionAPI): void {
             });
 
             if (child.result.status === "timed_out") {
-              resumeStore!.markTimedOut(lease.handle);
+              resumeStore!.markTimedOut(lease.handle, agent);
               child.result.resumeHandle = lease.handle;
               child.result.activity = [
                 ...child.result.activity,
                 { type: "status" as const, text: `short resume available: ${lease.handle}` },
               ].slice(-100);
+            } else if (child.result.status === "succeeded") {
+              const source = resumeStore!.markSucceeded(lease.handle, agent);
+              child.result.continuationHandle = source.handle;
+              child.result.continuationIndex = source.continuationIndex;
+              child.result.activity = [
+                ...child.result.activity,
+                { type: "status" as const, text: `related continuation available: ${lease.handle}` },
+              ].slice(-100);
             } else {
               await resumeStore!.discard(lease.handle);
             }
             leaseHandled = true;
-            if (agent.resume) claimedResumeHandled = true;
+            if (lineageHandle) handledLineages.add(lineageHandle);
             details.results[index] = child.result;
             detailedUsages[index] = child.detailedUsage;
           } catch (error) {
             const childStartedAt = runningSince.get(index);
             const durationMs = childStartedAt === undefined ? 0 : Date.now() - childStartedAt;
             let preservedResumeHandle: string | undefined;
+            let preservedContinuationHandle: string | undefined;
             if (lease && !leaseHandled) {
-              if (agent.resume) {
+              if (lineageHandle) {
                 resumeStore!.release(lease.handle);
-                preservedResumeHandle = lease.handle;
-                claimedResumeHandled = true;
+                if (lease.claimedAs === "resume") preservedResumeHandle = lease.handle;
+                else preservedContinuationHandle = lease.handle;
+                handledLineages.add(lineageHandle);
               } else {
                 await resumeStore!.discard(lease.handle);
               }
@@ -292,6 +331,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
                 durationMs,
                 ...(lease ? { sessionId: lease.sessionId } : {}),
                 ...(preservedResumeHandle ? { resumeHandle: preservedResumeHandle } : {}),
+                ...(preservedContinuationHandle ? { continuationHandle: preservedContinuationHandle } : {}),
                 errorMessage: "Delegation cancelled",
                 activity: [...details.results[index].activity, { type: "status" as const, text: "cancelled" }].slice(-100),
               };
@@ -303,6 +343,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
                 durationMs,
                 ...(lease ? { sessionId: lease.sessionId } : {}),
                 ...(preservedResumeHandle ? { resumeHandle: preservedResumeHandle } : {}),
+                ...(preservedContinuationHandle ? { continuationHandle: preservedContinuationHandle } : {}),
                 errorMessage: message,
                 activity: [...details.results[index].activity, { type: "status" as const, text: "internal child error" }].slice(-100),
               };
@@ -310,6 +351,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           } finally {
             runningSince.delete(index);
             permit?.release();
+            mutationPermit?.release();
             emit();
           }
         }));
@@ -334,7 +376,9 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         }
         clearInterval(heartbeat);
         if (pendingEmit) clearTimeout(pendingEmit);
-        if (claimedResume && !claimedResumeHandled) resumeStore!.release(claimedResume.handle);
+        for (const [handle] of claimedLineages) {
+          if (!handledLineages.has(handle)) resumeStore!.release(handle);
+        }
         if (runDirectory) {
           runDirectories.delete(runDirectory);
           await removeRunDirectory(runDirectory);

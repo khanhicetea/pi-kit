@@ -83,6 +83,25 @@ When the worker's scope is disjoint from a read-only lane, they may share one ca
 
 Afterward, the master inspects the actual diff and validation evidence.
 
+## Related continuation after success
+
+Continue a successful child only when the new bounded task benefits directly from its existing context. The continued child keeps its original role and capabilities; use `sharedContext` for verified deltas and require current-state validation.
+
+```json
+{
+  "objective": "Apply the verified review correction",
+  "sharedContext": "The master inspected the current diff and verified <specific finding>.",
+  "agents": [{
+    "id": "worker-fix",
+    "continueFrom": "<continuationHandle>",
+    "goal": "Re-read <affected files>, fix only <finding>, run <focused check>, and stop with changed files, outcomes, and residual risk.",
+    "timeoutSeconds": 300
+  }]
+}
+```
+
+Do not continue a scout as a worker, change its tools/model, or use old observations without revalidation. Start a fresh child when the task is independent.
+
 ## Short resume
 
 Resume only when partial output proves that a small amount remains. Never use a handle as an automatic retry.
@@ -108,4 +127,6 @@ Resume only when partial output proves that a small amount remains. Never use a 
 | “Plan and implement the feature” | The master plans and approves; one worker executes the concrete plan. |
 | Entire conversation pasted into `sharedContext` | Pass verified facts, relevant rules, and named artifacts only. |
 | Child result copied directly to the user | Compare, verify consequential claims, and synthesize in the master. |
+| Successful child continued for unrelated work | Start a fresh child; preserve continuation for semantically adjacent work. |
+| Continued worker trusts its old diff | Require it to re-read current files/diff/tests before editing. |
 | Timed-out child immediately resumed | Inspect partial output; resume only if close, otherwise narrow or finish locally. |

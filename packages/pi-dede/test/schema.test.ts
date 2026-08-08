@@ -50,6 +50,10 @@ describe("public schema", () => {
       agents: [{ id: "a", goal: "Return the remaining evidence", resume: "dede_handle", timeoutSeconds: 60 }],
     })).toBe(true);
     expect(Check(DedeDelegateSchema, {
+      objective: "Continue related work",
+      agents: [{ id: "a", goal: "Inspect the related path", continueFrom: "dede_handle", timeoutSeconds: 300 }],
+    })).toBe(true);
+    expect(Check(DedeDelegateSchema, {
       ...input,
       agents: [{ id: "a", goal: "x", env: { CHILD_MODE: 1 } }],
     })).toBe(false);
@@ -194,6 +198,7 @@ describe("semantic validation", () => {
         handle,
         sessionId: "11111111-1111-4111-8111-111111111111",
         attempt: 1,
+        continuationIndex: 0,
         agent: sourceAgent,
       } : undefined,
     };
@@ -210,7 +215,7 @@ describe("semantic validation", () => {
       tools: ["read", "grep", "find", "ls"],
       env: { REVIEW_TOKEN: "kept" },
       timeoutSeconds: 60,
-      resume: { handle: "dede_handle", sessionId: "11111111-1111-4111-8111-111111111111", attempt: 1 },
+      resume: { handle: "dede_handle", sessionId: "11111111-1111-4111-8111-111111111111", attempt: 1, continuationIndex: 0 },
     });
 
     expect(() => validateAndResolve({
@@ -236,6 +241,56 @@ describe("semantic validation", () => {
         { id: "b", goal: "new work" },
       ],
     }, resumeContext)).toThrow(/resume must run alone/);
+  });
+
+  it("continues a successful child with immutable capabilities and a normal deadline", () => {
+    const sourceAgent = validateAndResolve(valid({
+      agents: [{ id: "old", profile: "worker", goal: "Apply the approved fix", model: "other/small" }],
+    }), context)[0];
+    const continuationContext: ValidationContext = {
+      ...context,
+      continuationLookup: (handle) => handle === "dede_continue" ? {
+        handle,
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        attempt: 0,
+        continuationIndex: 2,
+        agent: sourceAgent,
+      } : undefined,
+    };
+
+    const [continued] = validateAndResolve({
+      objective: "Fix the review finding",
+      agents: [{ id: "fix-review", goal: "Revalidate the diff, fix the named finding, and run the focused test", continueFrom: "dede_continue", timeoutSeconds: 300 }],
+    }, continuationContext);
+    expect(continued).toMatchObject({
+      id: "fix-review",
+      profile: "worker",
+      model: "other/small",
+      mutationCapable: true,
+      timeoutSeconds: 300,
+      continueFrom: {
+        handle: "dede_continue",
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        continuationIndex: 3,
+      },
+    });
+    expect(continued.resume).toBeUndefined();
+
+    expect(() => validateAndResolve({
+      objective: "continue",
+      agents: [{ id: "a", goal: "x", continueFrom: "dede_continue", tools: ["read"] }],
+    }, continuationContext)).toThrow(/cannot override tools/);
+    expect(() => validateAndResolve({
+      objective: "continue",
+      agents: [{ id: "a", goal: "x", continueFrom: "dede_continue", resume: "dede_continue" }],
+    }, continuationContext)).toThrow(/both resume and continueFrom/);
+    expect(() => validateAndResolve({
+      objective: "continue",
+      agents: [
+        { id: "a", goal: "x", continueFrom: "dede_continue" },
+        { id: "b", goal: "y", continueFrom: "dede_continue" },
+      ],
+    }, continuationContext)).toThrow(/only once/);
   });
 
   it("accepts up to three agents and rejects a fourth", () => {

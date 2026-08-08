@@ -13,7 +13,9 @@ describe("extension registration", () => {
     const tool = registerTool.mock.calls[0][0];
     expect(tool).toMatchObject({ name: "dede_delegate", label: "Đệ Đệ" });
     expect(tool.description).toContain("one to three");
-    expect(tool.description).toContain("session-scoped resume handle");
+    expect(tool.description).toContain("continuation handle");
+    expect(tool.description).toContain("resume handle");
+    expect(tool.promptSnippet).toContain("continue a related finished child");
     expect(tool.promptSnippet).toContain("resume a timed-out child");
     const guidance = tool.promptGuidelines.join("\n");
     expect(guidance).toContain("first-pass repository orientation");
@@ -23,11 +25,14 @@ describe("extension registration", () => {
     expect(guidance).toContain("compact contract");
     expect(guidance).toContain("success criteria");
     expect(guidance).toContain("master");
+    expect(guidance).toContain("agents[].continueFrom");
+    expect(guidance).toContain("revalidate mutable repository state");
     expect(guidance).toContain("30-180 second extension");
     expect(guidance).toContain("do not restart completed work or resume blindly");
     expect(guidance).not.toContain("dependsOn");
     expect(tool.parameters.properties.agents.maxItems).toBe(3);
     expect(tool.parameters.properties.agents.items.properties.dependsOn).toBeUndefined();
+    expect(tool.parameters.properties.agents.items.properties.continueFrom).toMatchObject({ type: "string", maxLength: 128 });
     expect(tool.parameters.properties.agents.items.properties.resume).toMatchObject({ type: "string", maxLength: 128 });
     expect(tool.parameters.properties.agents.items.properties.env).toMatchObject({ type: "object", maxProperties: 64 });
     expect(tool.parameters.properties.agents.items.properties.profile.description).not.toContain("planner");

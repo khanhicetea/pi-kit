@@ -24,6 +24,9 @@ export interface DedeAgentRequest {
   id: string;
   profile?: DedeProfile;
   goal: string;
+  /** Continue a successfully finished related child lineage with a new bounded task. */
+  continueFrom?: string;
+  /** Finish the remaining work of a timed-out child with a short extension. */
   resume?: string;
   systemPrompt?: string;
   toolPreset?: ToolPreset;
@@ -45,12 +48,20 @@ export interface ResumeReference {
   handle: string;
   sessionId: string;
   attempt: number;
+  continuationIndex: number;
+}
+
+export interface ContinuationReference {
+  handle: string;
+  sessionId: string;
+  continuationIndex: number;
 }
 
 export interface ResolvedAgent {
   id: string;
   profile: DedeProfile;
   goal: string;
+  continueFrom?: ContinuationReference;
   resume?: ResumeReference;
   systemPrompt?: string;
   toolPreset: ToolPreset;
@@ -89,6 +100,9 @@ export interface DedeChildResult {
   timeoutSeconds: number;
   /** Persistent Pi session ID; inspect later with `pi --session <id>`. */
   sessionId?: string;
+  continuedFrom?: string;
+  continuationIndex?: number;
+  continuationHandle?: string;
   resumedFrom?: string;
   resumeHandle?: string;
   finalText: string;
@@ -121,10 +135,11 @@ export interface ModelLike {
   name?: string;
 }
 
-export interface ResumeSource {
+export interface ChildLineageSource {
   handle: string;
   sessionId: string;
   attempt: number;
+  continuationIndex: number;
   agent: ResolvedAgent;
 }
 
@@ -134,5 +149,6 @@ export interface ValidationContext {
   extensionProviderIds?: readonly string[];
   additionalArgs?: readonly string[];
   profileDefaults?: ProfileDefaults;
-  resumeLookup?: (handle: string) => ResumeSource | undefined;
+  continuationLookup?: (handle: string) => ChildLineageSource | undefined;
+  resumeLookup?: (handle: string) => ChildLineageSource | undefined;
 }

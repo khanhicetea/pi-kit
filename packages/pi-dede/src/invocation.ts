@@ -68,6 +68,7 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
   env.PI_DEDE_PARENT_SESSION_ID = options.parentSessionId;
   env.PI_DEDE_CHILD_SESSION_ID = options.childSessionId;
   env.PI_DEDE_RESUME_ATTEMPT = String(agent.resume?.attempt ?? 0);
+  env.PI_DEDE_CONTINUATION_INDEX = String(agent.continueFrom?.continuationIndex ?? agent.resume?.continuationIndex ?? 0);
 
   return { ...invocation, env };
 }

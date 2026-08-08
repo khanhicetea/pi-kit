@@ -37,8 +37,13 @@ const AgentSchema = Type.Object(
     })),
     goal: Type.String({
       minLength: 1,
-      description: "One bounded question or deliverable. For a resume, state only what remains and the stop condition.",
+      description: "One bounded question or deliverable. For a continuation, give one related new task; for a resume, state only what remains.",
     }),
+    continueFrom: Type.Optional(Type.String({
+      minLength: 1,
+      maxLength: 128,
+      description: "Continuation handle from a successfully finished child. Reuses its session and immutable capabilities for a related new bounded task.",
+    })),
     resume: Type.Optional(Type.String({
       minLength: 1,
       maxLength: 128,
@@ -222,6 +227,18 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     throw new Error("A timed-out child resume must run alone");
   }
 
+  const lineageHandles = new Set<string>();
+  for (const [index, agent] of input.agents.entries()) {
+    if (agent.resume !== undefined && agent.continueFrom !== undefined) {
+      throw new Error(`agents[${index}] cannot set both resume and continueFrom`);
+    }
+    const handle = agent.resume ?? agent.continueFrom;
+    if (handle !== undefined) {
+      if (lineageHandles.has(handle)) throw new Error(`Child lineage handle may appear only once per delegation: ${handle}`);
+      lineageHandles.add(handle);
+    }
+  }
+
   const ids = new Set<string>();
   for (const [index, agent] of input.agents.entries()) {
     if (!/^[a-z][a-z0-9-]{0,31}$/.test(agent.id)) throw new Error(`agents[${index}].id is invalid`);
@@ -242,18 +259,23 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
       throw new Error(`${label}.timeoutSeconds must be an integer from ${MIN_CHILD_TIMEOUT_SECONDS} to ${MAX_CHILD_TIMEOUT_SECONDS}`);
     }
 
-    if (agent.resume !== undefined) {
+    if (agent.resume !== undefined || agent.continueFrom !== undefined) {
+      const mode = agent.resume !== undefined ? "resume" : "continue";
+      const handle = agent.resume ?? agent.continueFrom!;
       const unsupported = ["profile", "systemPrompt", "toolPreset", "tools", "model", "thinking", "env"]
         .filter((key) => agent[key as keyof typeof agent] !== undefined);
       if (unsupported.length > 0) {
-        throw new Error(`${label} cannot override ${unsupported.join(", ")} when resuming; the old child keeps its identity, model, thinking, environment overrides, and tools`);
+        throw new Error(`${label} cannot override ${unsupported.join(", ")} when ${mode === "resume" ? "resuming" : "continuing"}; the old child keeps its profile, system instructions, model, thinking, environment overrides, and tools`);
       }
-      const source = context.resumeLookup?.(agent.resume);
+      const source = mode === "resume"
+        ? context.resumeLookup?.(handle)
+        : context.continuationLookup?.(handle);
       if (!source) {
-        throw new Error(`Resume handle is unavailable, expired, or already in use: ${agent.resume}`);
+        throw new Error(`${mode === "resume" ? "Resume" : "Continuation"} handle is unavailable, expired, or already in use: ${handle}`);
       }
-      const timeoutSeconds = agent.timeoutSeconds ?? input.timeoutSeconds ?? DEFAULT_RESUME_TIMEOUT_SECONDS;
-      if (timeoutSeconds > MAX_RESUME_TIMEOUT_SECONDS) {
+      const timeoutSeconds = agent.timeoutSeconds ?? input.timeoutSeconds
+        ?? (mode === "resume" ? DEFAULT_RESUME_TIMEOUT_SECONDS : DEFAULT_CHILD_TIMEOUT_SECONDS);
+      if (mode === "resume" && timeoutSeconds > MAX_RESUME_TIMEOUT_SECONDS) {
         throw new Error(`Resumed children are short extensions and timeoutSeconds must not exceed ${MAX_RESUME_TIMEOUT_SECONDS}`);
       }
       return {
@@ -263,11 +285,17 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
         tools: [...source.agent.tools],
         env: { ...source.agent.env },
         timeoutSeconds,
-        resume: {
+        continueFrom: mode === "continue" ? {
+          handle: source.handle,
+          sessionId: source.sessionId,
+          continuationIndex: source.continuationIndex + 1,
+        } : undefined,
+        resume: mode === "resume" ? {
           handle: source.handle,
           sessionId: source.sessionId,
           attempt: source.attempt,
-        },
+          continuationIndex: source.continuationIndex,
+        } : undefined,
       };
     }
 

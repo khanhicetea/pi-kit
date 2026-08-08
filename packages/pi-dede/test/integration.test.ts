@@ -143,6 +143,166 @@ describe("fake Pi integration", () => {
     }
   });
 
+  it("serializes mutation-capable children across concurrent tool calls", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-writer-lock-"));
+    const fake = join(directory, "fake-pi.mjs");
+    const logPath = join(directory, "writers.jsonl");
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
+    await writeFile(fake, `
+      import { appendFileSync } from "node:fs";
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type !== "prompt") return;
+        const id = process.env.PI_DEDE_AGENT_ID;
+        appendFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({ id, event: "start" }) + "\\n");
+        __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        setTimeout(() => {
+          appendFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({ id, event: "end" }) + "\\n");
+          const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+          __send({ type: "message_end", message: {
+            role: "assistant", content: [{ type: "text", text: "## Answer\\n- " + id }], provider: "fake", model: "model",
+            responseId: id, timestamp: Date.now(), stopReason: "stop", usage
+          }});
+          __send({ type: "agent_end" });
+          __send({ type: "agent_settled" });
+        }, 100);
+      }
+    `);
+
+    process.argv[1] = fake;
+    process.env.DEDE_TEST_LOG = logPath;
+    let tool: any;
+    let shutdown: any;
+    dedeExtension({
+      registerTool(value: any) { tool = value; },
+      on(event: string, handler: any) { if (event === "session_shutdown") shutdown = handler; },
+    } as unknown as ExtensionAPI);
+    const ctx = {
+      cwd: directory,
+      model: { provider: "fake", id: "model" },
+      modelRegistry: {
+        getAll: () => [{ provider: "fake", id: "model" }],
+        getRegisteredProviderIds: () => [],
+      },
+      sessionManager: { getSessionId: () => "writer-parent" },
+      isProjectTrusted: () => false,
+      ui: { setStatus: () => undefined },
+    };
+
+    try {
+      const run = (id: string) => tool.execute(id, {
+        objective: `Apply ${id}`,
+        agents: [{ id, profile: "worker", goal: `Apply ${id} and stop`, model: "fake/model" }],
+      }, undefined, undefined, ctx);
+      await Promise.all([run("writer-a"), run("writer-b")]);
+      const events = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => {
+        const entry = JSON.parse(line);
+        return `${entry.id}:${entry.event}`;
+      });
+      expect(events).toHaveLength(4);
+      const firstWriter = events[0].split(":")[0];
+      const secondWriter = firstWriter === "writer-a" ? "writer-b" : "writer-a";
+      expect(events).toEqual([`${firstWriter}:start`, `${firstWriter}:end`, `${secondWriter}:start`, `${secondWriter}:end`]);
+    } finally {
+      await shutdown?.({}, ctx);
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("continues a successful child in the same session with a related-task prompt", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-continue-"));
+    const fake = join(directory, "fake-pi.mjs");
+    const logPath = join(directory, "continuations.jsonl");
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
+    await writeFile(fake, `
+      import { appendFileSync } from "node:fs";
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type !== "prompt") return;
+        const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
+        appendFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({
+          sessionPath: value("--session"),
+          id: process.env.PI_DEDE_AGENT_ID,
+          continuationIndex: process.env.PI_DEDE_CONTINUATION_INDEX,
+          task: cmd.message
+        }) + "\\n");
+        __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        const usage = { input: 2, output: 1, cacheRead: Number(process.env.PI_DEDE_CONTINUATION_INDEX), cacheWrite: 0, totalTokens: 4,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+        __send({ type: "message_end", message: {
+          role: "assistant", content: [{ type: "text", text: "## Answer\\n- completed " + process.env.PI_DEDE_AGENT_ID }],
+          provider: "fake", model: "model", responseId: process.env.PI_DEDE_AGENT_ID, timestamp: Date.now(), stopReason: "stop", usage
+        }});
+        __send({ type: "agent_end" });
+        __send({ type: "agent_settled" });
+      }
+    `);
+
+    process.argv[1] = fake;
+    process.env.DEDE_TEST_LOG = logPath;
+    let tool: any;
+    let shutdown: any;
+    dedeExtension({
+      registerTool(value: any) { tool = value; },
+      on(event: string, handler: any) { if (event === "session_shutdown") shutdown = handler; },
+    } as unknown as ExtensionAPI);
+    const ctx = {
+      cwd: directory,
+      model: { provider: "fake", id: "model" },
+      modelRegistry: {
+        getAll: () => [{ provider: "fake", id: "model" }],
+        getRegisteredProviderIds: () => [],
+      },
+      sessionManager: { getSessionId: () => "continue-parent" },
+      isProjectTrusted: () => false,
+      ui: { setStatus: () => undefined },
+    };
+
+    try {
+      const first = await tool.execute("first", {
+        objective: "Trace the bounded flow",
+        agents: [{ id: "scout", profile: "scout", goal: "Trace one flow and stop", toolPreset: "none", model: "fake/model" }],
+      }, undefined, undefined, ctx);
+      const finished = first.details.results[0];
+      expect(finished).toMatchObject({ status: "succeeded", continuationIndex: 0 });
+      expect(finished.continuationHandle).toMatch(/^dede_/);
+      expect(first.content[0].text).toContain(`"continueFrom": "${finished.continuationHandle}"`);
+
+      const second = await tool.execute("second", {
+        objective: "Check the directly related edge",
+        sharedContext: "The repository changed after the first task.",
+        agents: [{ id: "scout-followup", goal: "Inspect the related edge and stop", continueFrom: finished.continuationHandle, timeoutSeconds: 300 }],
+      }, undefined, undefined, ctx);
+      const continued = second.details.results[0];
+      expect(continued).toMatchObject({
+        status: "succeeded",
+        sessionId: finished.sessionId,
+        continuedFrom: finished.continuationHandle,
+        continuationHandle: finished.continuationHandle,
+        continuationIndex: 1,
+        timeoutSeconds: 300,
+      });
+
+      const calls = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(calls).toHaveLength(2);
+      expect(calls[1].sessionPath).toBe(calls[0].sessionPath);
+      expect(calls[1].continuationIndex).toBe("1");
+      expect(calls[1].task).toContain("# New related assignment in your existing child lineage");
+      expect(calls[1].task).toContain("re-read the files, diff, or test state");
+      expect(calls[1].task).toContain("The repository changed after the first task.");
+    } finally {
+      await shutdown?.({}, ctx);
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("resumes the same persistent child conversation after a timeout", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-resume-"));
     const fake = join(directory, "fake-pi.mjs");
@@ -228,6 +388,8 @@ describe("fake Pi integration", () => {
         status: "succeeded",
         resumedFrom: timedOut.resumeHandle,
         sessionId: timedOut.sessionId,
+        continuationHandle: timedOut.resumeHandle,
+        continuationIndex: 0,
         finalText: "## Answer\n- reused old session evidence",
       });
 

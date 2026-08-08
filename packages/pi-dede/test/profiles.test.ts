@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt, getProfilePrompt } from "../src/profiles.ts";
+import { buildContinuationTaskPrompt, buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt, getProfilePrompt } from "../src/profiles.ts";
 import { PROFILES, type ResolvedAgent } from "../src/types.ts";
 
 const worker: ResolvedAgent = {
@@ -67,6 +67,15 @@ describe("profile prompts", () => {
       "# Master-owned objective\nobjective\n\n# Your bounded assignment\ngoal\n\n# Known context and relevant project rules\ncontext\n",
     );
     expect(buildTaskPrompt("objective", "goal")).toContain("Inspect only what the assignment requires.");
+  });
+
+  it("gives a finished child a related new task while requiring current-state validation", () => {
+    const prompt = buildContinuationTaskPrompt("check the related edge", "inspect the new path", "the diff changed");
+    expect(prompt).toContain("New related assignment in your existing child lineage");
+    expect(prompt).toContain("re-read the files, diff, or test state");
+    expect(prompt).toContain("Do not repeat completed work unless current-state validation requires it");
+    expect(prompt).toContain("inspect the new path");
+    expect(prompt).toContain("the diff changed");
   });
 
   it("tells a resumed child to reuse progress instead of restarting", () => {

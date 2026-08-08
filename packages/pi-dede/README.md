@@ -51,7 +51,9 @@ The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads 
 - Compact 400-word response contract
 - 4 KiB model-visible limit per child and 12 KiB aggregate limit
 - Persistent child session IDs for later inspection with `pi --session <id>`
-- Session-scoped continuation handles for timed-out children
+- Session-scoped continuation handles for related follow-up tasks after success
+- Separate short resume handles for timed-out children
+- Atomic per-lineage claims and a runtime-wide mutation lease
 - Throttled TUI progress with elapsed/deadline display
 - Nested usage accounting and process-tree cancellation
 - Per-turn settled summary of subagent count and cost grouped by model ID
@@ -126,7 +128,38 @@ After the master has synthesized evidence and approved a concrete plan, run one 
 }
 ```
 
-Any child with `bash`, `edit`, or `write` is mutation-capable. At most one mutation-capable child may run per call; it may run alongside read-only agents, while two concurrent writers are rejected to prevent clobbered edits.
+Any child with `bash`, `edit`, or `write` is mutation-capable. At most one mutation-capable child may run per call; it may run alongside read-only agents. A runtime-wide mutation lease also serializes writers from concurrent `dede_delegate` calls, preventing separate calls from clobbering the same workspace.
+
+## Continue a successfully finished child
+
+Every successfully finished child returns a `continuationHandle`. Use `continueFrom` when a new bounded task is directly related to that child's previous context—for example, asking a scout to inspect a related path or asking a worker to fix a review finding in its own implementation.
+
+```json
+{
+  "objective": "Fix the verified review finding",
+  "sharedContext": "The master verified the current diff and found <specific issue>.",
+  "agents": [{
+    "id": "worker-fix",
+    "continueFrom": "dede_00000000-0000-4000-8000-000000000000",
+    "goal": "Re-read the affected files, fix only <issue>, run <focused check>, and stop.",
+    "timeoutSeconds": 300
+  }]
+}
+```
+
+Continuation rules:
+
+- the same persistent Pi session and active conversation branch are reopened in a fresh RPC process;
+- profile, system instructions, model, thinking, environment, additional arguments, and tools remain immutable;
+- only `id`, `goal`, and `timeoutSeconds` may change; the call may supply a new objective and concise `sharedContext`;
+- normal 30–1800 second child deadlines apply;
+- the continuation prompt tells the child to reuse relevant context but revalidate mutable repository, diff, and test state;
+- successful continuations return the same stable handle and an incremented `continuationIndex`;
+- a continuation that times out transitions to the short `resume` workflow; a failed or cancelled child is not reusable;
+- distinct read-only continuation handles may run in parallel, but one handle can be claimed only once per call and claims are all-or-nothing;
+- successful handles are scoped to the current master runtime, retained for 30 idle minutes, and limited to the 12 most recent lineages; eviction never deletes the inspectable Pi session.
+
+Use the opaque handle rather than a raw `sessionId`: the handle preserves trusted lineage configuration and provides an atomic lease. Clone/fork are intentionally not used; they are branching primitives, while `continueFrom` appends a related task to the existing active branch.
 
 ## Short continuation after timeout
 
@@ -152,9 +185,10 @@ Resume rules:
 - it reuses the exact previous child conversation, profile, system instructions, model, thinking, environment overrides, and tools;
 - only `id`, `goal`, and `timeoutSeconds` may change;
 - the extension defaults to 60 seconds and allows 30–180 seconds;
-- the continuation prompt tells the child to reuse existing progress instead of restarting;
+- the resume prompt tells the child to reuse existing progress instead of restarting;
 - a second timeout returns the same handle for another deliberate short extension;
-- success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection;
+- success converts the same stable handle into a `continuationHandle` for a later related task;
+- a terminal non-timeout failure consumes the handle but preserves the child session for inspection;
 - handles expire on master session shutdown, reload, replacement, or fork.
 
 Child sessions use Pi's normal persistent session storage and appear in the session list for the project. Their IDs are shown in collapsed and expanded tool results and in model-visible tool output.
@@ -168,7 +202,7 @@ Child sessions use Pi's normal persistent session storage and appear in the sess
 | `worker` | coding | `medium` | Execute one concrete approved change |
 | `custom` | read-only | `low` | Caller-defined narrow specialty |
 
-Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial timeouts range from 30 to 1800 seconds and default to 180 seconds; resumed children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second continuation budget.
+Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial and successfully continued tasks use 30–1800 second deadlines and default to 180 seconds. Resumed timed-out children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second completion budget.
 
 Persistent profile model, thinking, and environment overrides—and extra child CLI arguments—may be placed in:
 
@@ -230,7 +264,14 @@ Children run as separate `pi --mode rpc` processes driven over a stdin/stdout JS
 
 Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. Discovered context files and skills may affect the child, so use `sharedContext` and `additionalArgs` to control the child configuration explicitly.
 
-See [SPEC.md](./SPEC.md) for the complete v0.3 contract.
+See [SPEC.md](./SPEC.md) for the complete current contract.
+
+## Current continuation changes
+
+- Successful children now return a stable `continuationHandle` for directly related bounded follow-up tasks through `continueFrom`.
+- Continued children reuse the same Pi session and immutable role/capabilities while receiving a current-state revalidation prompt and normal deadline.
+- Successful lineage handles are atomically claimed, bounded by an in-memory LRU/TTL, and transition to timeout resume when interrupted.
+- A runtime-wide mutation lease serializes writers across concurrent tool calls.
 
 ## v0.3 changes
 

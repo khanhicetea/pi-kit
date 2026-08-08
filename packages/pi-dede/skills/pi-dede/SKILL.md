@@ -1,6 +1,6 @@
 ---
 name: pi-dede
-description: Orchestrate short, isolated Pi sub-agents with dede_delegate. Use when a parent agent has already inspected the relevant area and needs bounded parallel evidence, one focused review, one approved implementation worker, or a deliberate short continuation after timeout.
+description: Orchestrate short, isolated Pi sub-agents with dede_delegate. Use when a parent agent needs bounded parallel evidence, one focused review, one approved implementation worker, a related continuation of a successful child, or a deliberate short resume after timeout.
 ---
 
 # Pi Đệ Đệ
@@ -38,10 +38,17 @@ Before parallel fanout, compare the contracts. Do not send clone prompts with on
 | --- | --- |
 | Two or three independent questions | Parallel read-only `scout`, `reviewer`, or `custom` children |
 | One bounded second opinion | One read-only `reviewer` or `custom` child |
-| One approved code change | One `worker` (optionally alongside read-only scouts); at most one mutation-capable child per run |
-| Finish near-complete timed-out work | One solo resume with only what remains and a 30–180 second deadline |
+| One approved code change | One `worker` (optionally alongside read-only scouts); writers are serialized across concurrent runs |
+| New task directly related to a finished child | `continueFrom` its handle; keep its role/capabilities and provide only new facts |
+| Finish near-complete timed-out work | One solo `resume` with only what remains and a 30–180 second deadline |
 
-A run allows at most one mutation-capable child; it may run alongside read-only agents, but never pair two writers (they can clobber one another's edits). Do not create extra lanes merely to use all three slots.
+A run allows at most one mutation-capable child; it may run alongside read-only agents, while a runtime-wide lease serializes writers from concurrent calls. Do not create extra lanes merely to use all three slots.
+
+## Reuse an existing child lineage
+
+A successful result may include `continuationHandle`. Use it only when the new bounded task directly benefits from that child's existing context. This is the same logical child even when the new invocation uses another display `id`: its profile, system prompt, model, thinking, environment, and tools remain fixed. Put only new verified facts in `sharedContext`, and require workers or scouts to re-read mutable files, diffs, or tests before relying on earlier observations.
+
+`continueFrom` is not a handoff to a different role and not a substitute for a fresh independent lane. It uses the normal 30–1800 second budget and may run with other independent children. If it times out, inspect the partial result before using the returned short `resume` handle. Never pass a raw `sessionId` as a capability.
 
 ## After children return
 

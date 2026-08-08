@@ -54,6 +54,10 @@ export function buildTaskPrompt(objective: string, goal: string, sharedContext?:
   return `# Master-owned objective\n${objective}\n\n# Your bounded assignment\n${goal}\n\n# Known context and relevant project rules\n${sharedContext?.trim() || "None supplied. Inspect only what the assignment requires."}\n`;
 }
 
+export function buildContinuationTaskPrompt(objective: string, goal: string, sharedContext?: string): string {
+  return `# New related assignment in your existing child lineage\nReuse relevant evidence and reasoning already in this conversation, but treat repository state as mutable: re-read the files, diff, or test state needed by this assignment before relying on prior observations. Do not repeat completed work unless current-state validation requires it.\n\n# Master-owned objective\n${objective}\n\n# Your new bounded assignment\n${goal}\n\n# New context since your previous assignment\n${sharedContext?.trim() || "None."}\n\nComplete only this related assignment and stop at its stated boundary.\n`;
+}
+
 export function buildResumeTaskPrompt(objective: string, goal: string, sharedContext?: string): string {
-  return `# Short continuation of your previous assignment\nReuse the evidence and progress already in this conversation. Do not restart the investigation or repeat completed work.\n\n# Master's remaining need\n${objective}\n\n# What remains and when to stop\n${goal}\n\n# New context since the timeout\n${sharedContext?.trim() || "None."}\n\nFinish the bounded answer within this short extension.\n`;
+  return `# Short continuation of your interrupted assignment\nReuse the evidence and progress already in this conversation. Do not restart the investigation or repeat completed work.\n\n# Master's remaining need\n${objective}\n\n# What remains and when to stop\n${goal}\n\n# New context since the timeout\n${sharedContext?.trim() || "None."}\n\nFinish the bounded answer within this short extension.\n`;
 }

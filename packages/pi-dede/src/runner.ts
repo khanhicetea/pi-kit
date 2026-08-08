@@ -307,7 +307,13 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     tools: [...options.agent.tools],
     timeoutSeconds: options.timeoutSeconds,
     sessionId: options.childSessionId,
-    ...(options.agent.resume ? { resumedFrom: options.agent.resume.handle } : {}),
+    ...(options.agent.continueFrom ? {
+      continuedFrom: options.agent.continueFrom.handle,
+      continuationIndex: options.agent.continueFrom.continuationIndex,
+    } : options.agent.resume ? {
+      resumedFrom: options.agent.resume.handle,
+      continuationIndex: options.agent.resume.continuationIndex,
+    } : { continuationIndex: 0 }),
     finalText: capped.text,
     durationMs: Date.now() - startedAt,
     ...(exitCode !== undefined ? { exitCode } : {}),

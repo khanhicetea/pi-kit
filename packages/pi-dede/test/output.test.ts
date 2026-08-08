@@ -50,6 +50,16 @@ describe("output", () => {
     expect(text).toContain("pi --session 11111111-1111-4111-8111-111111111111");
   });
 
+  it("exposes a successful child's related continuation capability", () => {
+    const finished = child("scout", "succeeded");
+    finished.continuationHandle = "dede_continue";
+    finished.continuationIndex = 0;
+    const text = formatModelContent(details([finished]));
+    expect(text).toContain("Related continuation available: `dede_continue`");
+    expect(text).toContain('"continueFrom": "dede_continue"');
+    expect(text).toContain("directly benefits from this child's context");
+  });
+
   it("puts the short resume instructions before partial timed-out output", () => {
     const timedOut = child("slow", "timed_out", "partial evidence");
     timedOut.errorMessage = "Timed out after 120 seconds";

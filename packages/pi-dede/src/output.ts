@@ -19,7 +19,10 @@ function childBody(result: DedeChildResult): string {
   const session = result.sessionId
     ? `Session: \`${result.sessionId}\` (inspect with \`pi --session ${result.sessionId}\`)`
     : undefined;
-  if (result.status === "succeeded") return [session, result.finalText || "(no output)"].filter(Boolean).join("\n\n");
+  const continuation = result.continuationHandle
+    ? `Related continuation available: \`${result.continuationHandle}\`. For a new bounded task that directly benefits from this child's context, call dede_delegate with \"continueFrom\": \"${result.continuationHandle}\". Keep its capabilities unchanged and provide only new facts in sharedContext.`
+    : undefined;
+  if (result.status === "succeeded") return [session, result.finalText || "(no output)", continuation].filter(Boolean).join("\n\n");
   const resume = result.resumeHandle
     ? `Short resume available: \`${result.resumeHandle}\`. Resume only if the partial work is close to useful completion. Call dede_delegate with one agent using \"resume\": \"${result.resumeHandle}\", a goal stating only what remains, and timeoutSeconds from 30 to 180.`
     : undefined;
@@ -27,6 +30,7 @@ function childBody(result: DedeChildResult): string {
     session,
     result.errorMessage,
     resume,
+    continuation,
     result.finalText && `Partial output:\n${result.finalText}`,
     result.stderrTail && `stderr (tail):\n\`\`\`\n${result.stderrTail}\n\`\`\``,
   ].filter(Boolean);

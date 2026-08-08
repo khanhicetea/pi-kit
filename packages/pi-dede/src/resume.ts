@@ -1,43 +1,80 @@
 import { randomUUID } from "node:crypto";
 import { chmod, writeFile } from "node:fs/promises";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ResolvedAgent, ResumeSource } from "./types.ts";
+import type { ChildLineageSource, ResolvedAgent } from "./types.ts";
 
-export interface ResumeLease extends ResumeSource {
+export type ChildLineageAvailability = "continue" | "resume";
+
+export interface ChildLineageLease extends ChildLineageSource {
   directory: string;
   sessionPath: string;
+  claimedAs?: ChildLineageAvailability;
 }
 
-interface StoredResume extends ResumeLease {
-  available: boolean;
+interface StoredLineage extends ChildLineageLease {
+  availableAs?: ChildLineageAvailability;
+  availableAt?: number;
 }
+
+const MAX_AVAILABLE_CONTINUATIONS = 12;
+const CONTINUATION_IDLE_TTL_MS = 30 * 60 * 1000;
 
 function cloneAgent(agent: ResolvedAgent): ResolvedAgent {
   return {
     ...agent,
     tools: [...agent.tools],
     env: { ...agent.env },
+    continueFrom: agent.continueFrom ? { ...agent.continueFrom } : undefined,
     resume: agent.resume ? { ...agent.resume } : undefined,
   };
 }
 
-function cloneSource(record: StoredResume): ResumeSource {
+function cloneSource(record: StoredLineage): ChildLineageSource {
   return {
     handle: record.handle,
     sessionId: record.sessionId,
     attempt: record.attempt,
+    continuationIndex: record.continuationIndex,
     agent: cloneAgent(record.agent),
   };
 }
 
-/** Session-scoped store for timed-out child conversations. */
+function cloneLease(record: StoredLineage, claimedAs?: ChildLineageAvailability): ChildLineageLease {
+  return {
+    ...cloneSource(record),
+    directory: record.directory,
+    sessionPath: record.sessionPath,
+    ...(claimedAs ? { claimedAs } : {}),
+  };
+}
+
+/** Session-scoped capability store for persistent child conversation lineages. */
 export class ChildResumeStore {
   private closed = false;
-  private readonly records = new Map<string, StoredResume>();
+  private readonly records = new Map<string, StoredLineage>();
 
-  /** Allocate a persistent, inspectable child session. It becomes resumable only after markTimedOut(). */
-  async allocate(agent: ResolvedAgent, cwd: string): Promise<ResumeLease> {
-    if (this.closed) throw new Error("Child resume store is shut down");
+  private pruneContinuations(now = Date.now()): void {
+    const available = [...this.records.values()]
+      .filter((record) => record.availableAs === "continue")
+      .sort((left, right) => (left.availableAt ?? 0) - (right.availableAt ?? 0));
+    for (const record of available) {
+      if (now - (record.availableAt ?? now) > CONTINUATION_IDLE_TTL_MS) {
+        this.records.delete(record.handle);
+      }
+    }
+
+    const remaining = [...this.records.values()]
+      .filter((record) => record.availableAs === "continue")
+      .sort((left, right) => (left.availableAt ?? 0) - (right.availableAt ?? 0));
+    for (const record of remaining.slice(0, Math.max(0, remaining.length - MAX_AVAILABLE_CONTINUATIONS))) {
+      this.records.delete(record.handle);
+    }
+  }
+
+  /** Allocate a persistent, inspectable child session. It becomes reusable only after settlement. */
+  async allocate(agent: ResolvedAgent, cwd: string): Promise<ChildLineageLease> {
+    if (this.closed) throw new Error("Child lineage store is shut down");
+    this.pruneContinuations();
     const handle = `dede_${randomUUID()}`;
     const sessionId = randomUUID();
     const manager = SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR, { id: sessionId });
@@ -46,57 +83,93 @@ export class ChildResumeStore {
     if (!sessionPath) throw new Error("Could not create child session file");
     await writeFile(sessionPath, `${JSON.stringify(manager.getHeader())}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     await chmod(sessionPath, 0o600);
-    const record: StoredResume = {
+    const record: StoredLineage = {
       handle,
       sessionId,
       attempt: 0,
-      agent: cloneAgent({ ...agent, resume: undefined }),
+      continuationIndex: 0,
+      agent: cloneAgent({ ...agent, continueFrom: undefined, resume: undefined }),
       directory,
       sessionPath,
-      available: false,
     };
     this.records.set(handle, record);
-    return { ...cloneSource(record), directory, sessionPath };
+    return cloneLease(record);
   }
 
-  /** Return an available source for semantic validation without claiming it. */
-  peek(handle: string): ResumeSource | undefined {
+  peek(handle: string, availability: ChildLineageAvailability): ChildLineageSource | undefined {
+    this.pruneContinuations();
     const record = this.records.get(handle);
-    return record?.available ? cloneSource(record) : undefined;
+    return record?.availableAs === availability ? cloneSource(record) : undefined;
   }
 
-  /** Atomically claim a timed-out session so two tool calls cannot resume it concurrently. */
-  claim(handle: string): ResumeLease {
-    const record = this.records.get(handle);
-    if (!record || !record.available) {
-      throw new Error(`Resume handle is unavailable or already in use: ${handle}`);
+  /** Atomically claim all requested lineages, or none when any capability is unavailable. */
+  claimMany(requests: readonly { handle: string; availability: ChildLineageAvailability }[]): Map<string, ChildLineageLease> {
+    this.pruneContinuations();
+    const unique = new Set(requests.map((request) => request.handle));
+    if (unique.size !== requests.length) throw new Error("A child lineage handle may be claimed only once per delegation");
+    for (const request of requests) {
+      const record = this.records.get(request.handle);
+      if (!record || record.availableAs !== request.availability) {
+        throw new Error(`${request.availability === "resume" ? "Resume" : "Continuation"} handle is unavailable, expired, or already in use: ${request.handle}`);
+      }
     }
-    record.available = false;
-    return { ...cloneSource(record), directory: record.directory, sessionPath: record.sessionPath };
+    const leases = new Map<string, ChildLineageLease>();
+    for (const request of requests) {
+      const record = this.records.get(request.handle)!;
+      record.availableAs = undefined;
+      record.availableAt = undefined;
+      record.claimedAs = request.availability;
+      leases.set(request.handle, cloneLease(record, request.availability));
+    }
+    return leases;
   }
 
-  /** Release a claimed handle after setup failed without consuming another attempt. */
+  /** Release a claimed capability after setup failed without consuming it. */
   release(handle: string): void {
     const record = this.records.get(handle);
-    if (record) record.available = true;
+    if (!record?.claimedAs) return;
+    record.availableAs = record.claimedAs;
+    record.claimedAs = undefined;
+    record.availableAt = Date.now();
   }
 
-  /** Make the same conversation available for one short continuation. */
-  markTimedOut(handle: string): ResumeSource {
+  /** Make a settled successful conversation available for another related bounded task. */
+  markSucceeded(handle: string, agent: ResolvedAgent): ChildLineageSource {
     const record = this.records.get(handle);
-    if (!record) throw new Error(`Unknown child resume handle: ${handle}`);
+    if (!record) throw new Error(`Unknown child lineage handle: ${handle}`);
+    record.attempt = 0;
+    record.continuationIndex = agent.continueFrom?.continuationIndex
+      ?? agent.resume?.continuationIndex
+      ?? record.continuationIndex;
+    record.claimedAs = undefined;
+    record.availableAs = "continue";
+    record.availableAt = Date.now();
+    this.pruneContinuations();
+    return cloneSource(record);
+  }
+
+  /** Make an interrupted conversation available for one deliberate short resume. */
+  markTimedOut(handle: string, agent?: ResolvedAgent): ChildLineageSource {
+    const record = this.records.get(handle);
+    if (!record) throw new Error(`Unknown child lineage handle: ${handle}`);
     record.attempt++;
-    record.available = true;
+    record.continuationIndex = agent?.continueFrom?.continuationIndex
+      ?? agent?.resume?.continuationIndex
+      ?? record.continuationIndex;
+    record.claimedAs = undefined;
+    record.availableAs = "resume";
+    record.availableAt = Date.now();
     return cloneSource(record);
   }
 
   async discard(handle: string): Promise<void> {
-    // Consume only the resume capability. The Pi session remains available for inspection.
+    // Consume only the continuation capability. The Pi session remains available for inspection.
     this.records.delete(handle);
   }
 
   get available(): number {
-    return [...this.records.values()].filter((record) => record.available).length;
+    this.pruneContinuations();
+    return [...this.records.values()].filter((record) => record.availableAs !== undefined).length;
   }
 
   async cleanup(): Promise<void> {

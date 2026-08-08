@@ -44,16 +44,27 @@ function activityPreview(activity: readonly DedeActivity[], max = 12): string {
 
 export function renderDedeCall(args: DedeDelegateParams, theme: any, context: any): Text {
   const agents = args.agents ?? [];
-  const mode = agents[0]?.resume ? "short resume" : agents.length > 1 ? "parallel evidence" : agents[0]?.profile === "worker" ? "worker" : "single evidence";
+  const mode = agents[0]?.resume
+    ? "short resume"
+    : agents.some((agent) => agent.continueFrom)
+      ? "related continuation"
+      : agents.length > 1
+        ? "parallel evidence"
+        : agents[0]?.profile === "worker" ? "worker" : "single evidence";
   const component = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
   let text = theme.fg("toolTitle", theme.bold("Đệ Đệ  ")) + theme.fg("accent", `${mode} · ${agents.length} agent${agents.length === 1 ? "" : "s"}`);
   if (args.objective) text += `\n  ${theme.fg("muted", "objective · ")}${theme.fg("dim", preview(args.objective, 100))}`;
   for (const agent of agents) {
-    const profile = agent.resume ? "existing profile" : agent.profile ?? "custom";
-    const preset = agent.resume ? "existing capabilities" : agent.toolPreset ?? (profile === "worker" ? "coding" : "read-only");
+    const reusing = agent.resume || agent.continueFrom;
+    const profile = reusing ? "existing profile" : agent.profile ?? "custom";
+    const preset = reusing ? "existing capabilities" : agent.toolPreset ?? (profile === "worker" ? "coding" : "read-only");
     const timeout = agent.timeoutSeconds ?? args.timeoutSeconds ?? (agent.resume ? DEFAULT_RESUME_TIMEOUT_SECONDS : DEFAULT_CHILD_TIMEOUT_SECONDS);
-    const resume = agent.resume ? ` · resume ${preview(agent.resume, 18)}` : "";
-    text += `\n  ${theme.fg("accent", agent.id)} ${theme.fg("muted", `· ${profile} · ${preset} · ${timeout}s${resume}`)}`;
+    const lineage = agent.resume
+      ? ` · resume ${preview(agent.resume, 18)}`
+      : agent.continueFrom
+        ? ` · continue ${preview(agent.continueFrom, 18)}`
+        : "";
+    text += `\n  ${theme.fg("accent", agent.id)} ${theme.fg("muted", `· ${profile} · ${preset} · ${timeout}s${lineage}`)}`;
     text += `\n    ${theme.fg("dim", preview(agent.goal, 110))}`;
   }
   component.setText(text);
@@ -97,7 +108,8 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     let text = theme.fg("toolTitle", theme.bold("Đệ Đệ  ")) + theme.fg("accent", `${done}/${details.results.length} done · ${running} running${queueLabel}`) + theme.fg("dim", ` · ${seconds(details.durationMs)} · Esc to cancel`);
     for (const child of details.results) {
       const latest = child.activity.at(-1)?.text ?? child.status;
-      const runtime = `${child.resumedFrom ? "resumed · " : ""}${child.profile} · ${child.model} · ${child.thinking} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s`;
+      const lineage = child.resumedFrom ? "resumed · " : child.continuedFrom ? `continued #${child.continuationIndex ?? 0} · ` : "";
+      const runtime = `${lineage}${child.profile} · ${child.model} · ${child.thinking} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s`;
       text += `\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", `· ${runtime}`)}`;
       text += `\n    ${theme.fg("dim", preview(latest, 120))}`;
     }
@@ -137,6 +149,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     if (child.sessionId) container.addChild(new Text(theme.fg("muted", "Session: ") + theme.fg("dim", `${child.sessionId} · inspect with pi --session ${child.sessionId}`), 0, 0));
     if (child.activity.length) container.addChild(new Text(theme.fg("dim", activityPreview(child.activity)), 0, 0));
     if (child.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${child.errorMessage}`), 0, 0));
+    if (child.continuationHandle) container.addChild(new Text(theme.fg("success", `Related continuation: ${child.continuationHandle} · same session and capabilities`), 0, 0));
     if (child.resumeHandle) container.addChild(new Text(theme.fg("warning", `Short resume: ${child.resumeHandle} · 30-180s · use only if close to completion`), 0, 0));
     if (child.finalText) {
       container.addChild(new Spacer(1));

@@ -92,6 +92,7 @@ describe("child invocation", () => {
         handle: "dede_handle",
         sessionId: invocationOptions.childSessionId,
         attempt: 1,
+        continuationIndex: 0,
       },
       timeoutSeconds: 60,
     };
@@ -99,6 +100,7 @@ describe("child invocation", () => {
     const args = invocation.args.join(" ");
     expect(args).toContain("--session-dir /tmp/pi-dede-sessions --session /tmp/pi-dede-sessions/child.jsonl");
     expect(invocation.env.PI_DEDE_RESUME_ATTEMPT).toBe("1");
+    expect(invocation.env.PI_DEDE_CONTINUATION_INDEX).toBe("0");
   });
 
   it("appends configured CLI args after built-in options as the trailing arguments", () => {
