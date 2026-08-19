@@ -207,6 +207,7 @@ export async function fetchCodexUsage(
 export interface CodexUsageRow {
   label: string;
   leftPercent: number | null;
+  resetText: string | null;
 }
 
 export function formatPercent(value: number): string {
@@ -221,12 +222,31 @@ function formatWindowDuration(seconds: number): string {
   return "limit";
 }
 
+function formatResetTime(resetsAtMs: number | null, now = Date.now()): string | null {
+  if (resetsAtMs === null) return null;
+
+  const remainingMinutes = Math.max(0, Math.ceil((resetsAtMs - now) / 60_000));
+  if (remainingMinutes === 0) return "Resets now";
+
+  const days = Math.floor(remainingMinutes / (24 * 60));
+  const hours = Math.floor((remainingMinutes % (24 * 60)) / 60);
+  const minutes = remainingMinutes % 60;
+  const parts = days > 0
+    ? [`${days}d`, ...(hours > 0 ? [`${hours}h`] : [])]
+    : hours > 0
+      ? [`${hours}h`, ...(minutes > 0 ? [`${minutes}m`] : [])]
+      : [`${minutes}m`];
+  return `Resets in ${parts.join(" ")}`;
+}
+
 export function codexUsageRows(report: CodexUsageReport): CodexUsageRow[] {
+  const now = Date.now();
   return report.windows.map((window, index) => ({
     label: window.limitSeconds !== null && window.limitSeconds > 0
       ? formatWindowDuration(window.limitSeconds)
       : index === 0 ? "session" : "weekly",
     leftPercent: window.usedPercent === null ? null : Math.max(0, 100 - window.usedPercent),
+    resetText: formatResetTime(window.resetsAtMs, now),
   }));
 }
 
@@ -240,7 +260,7 @@ export function formatCodexUsage(report: CodexUsageReport, barWidth = 8): string
   const provider = report.providerName.replace(/^OpenAI\s+/i, "");
   const windows = codexUsageRows(report).map((row) => {
     const percent = row.leftPercent === null ? "--%" : `${formatPercent(row.leftPercent)}%`;
-    return `${row.label} ${plainProgressBar(row.leftPercent, barWidth)} ${percent}`;
+    return `${row.label} ${plainProgressBar(row.leftPercent, barWidth)} ${percent}${row.resetText ? ` ${row.resetText}` : ""}`;
   });
   return [provider, ...windows].join(" - ");
 }

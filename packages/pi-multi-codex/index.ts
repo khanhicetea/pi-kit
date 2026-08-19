@@ -167,7 +167,11 @@ function renderUsage(ctx: ExtensionContext, report: CodexUsageReport): void {
 
       const fixedWidth = provider.length
         + separator.length * rows.length
-        + rows.reduce((total, row) => total + row.label.length + row.percent.length + 2, 0);
+        + rows.reduce(
+          (total, row) => total + row.label.length + row.percent.length + 2
+            + (row.resetText ? row.resetText.length + 1 : 0),
+          0,
+        );
       const barWidth = Math.min(10, Math.floor((width - fixedWidth) / rows.length));
 
       if (barWidth >= 3) {
@@ -175,7 +179,8 @@ function renderUsage(ctx: ExtensionContext, report: CodexUsageReport): void {
           const color = usageColor(row.leftPercent, report.limited);
           const filled = row.leftPercent === null ? 0 : Math.round(barWidth * row.leftPercent / 100);
           const bar = theme.fg(color, "█".repeat(filled)) + theme.fg("dim", "░".repeat(barWidth - filled));
-          return `${theme.fg("muted", row.label)} ${bar} ${theme.fg(color, theme.bold(row.percent))}`;
+          const reset = row.resetText ? ` ${theme.fg("dim", row.resetText)}` : "";
+          return `${theme.fg("muted", row.label)} ${bar} ${theme.fg(color, theme.bold(row.percent))}${reset}`;
         });
         const content = [theme.fg("accent", theme.bold(provider)), ...windows].join(separator);
         const contentWidth = fixedWidth + barWidth * rows.length;
@@ -183,12 +188,17 @@ function renderUsage(ctx: ExtensionContext, report: CodexUsageReport): void {
       }
 
       const compactWindowsWidth = separator.length * rows.length
-        + rows.reduce((total, row) => total + row.label.length + row.percent.length + 1, 0);
+        + rows.reduce(
+          (total, row) => total + row.label.length + row.percent.length + 1
+            + (row.resetText ? row.resetText.length + 1 : 0),
+          0,
+        );
       const providerWidth = width - compactWindowsWidth;
       if (providerWidth > 0) {
         const windows = rows.map((row) => {
           const color = usageColor(row.leftPercent, report.limited);
-          return `${theme.fg("muted", row.label)} ${theme.fg(color, theme.bold(row.percent))}`;
+          const reset = row.resetText ? ` ${theme.fg("dim", row.resetText)}` : "";
+          return `${theme.fg("muted", row.label)} ${theme.fg(color, theme.bold(row.percent))}${reset}`;
         });
         const compactProvider = truncatePlain(provider, providerWidth);
         const content = [theme.fg("accent", theme.bold(compactProvider)), ...windows].join(separator);
@@ -197,7 +207,7 @@ function renderUsage(ctx: ExtensionContext, report: CodexUsageReport): void {
       }
 
       const fallback = truncatePlain(
-        [provider, ...rows.map((row) => `${row.label} ${row.percent}`)].join(separator),
+        [provider, ...rows.map((row) => `${row.label} ${row.percent}${row.resetText ? ` ${row.resetText}` : ""}`)].join(separator),
         width,
       );
       return [`${" ".repeat(Math.max(0, width - Array.from(fallback).length))}${theme.fg("accent", fallback)}`];
