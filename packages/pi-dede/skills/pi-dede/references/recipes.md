@@ -14,6 +14,7 @@ Use two lanes by default; add a third only for a genuinely separate decision inp
     {
       "id": "flow",
       "profile": "scout",
+      "contextMode": "auto",
       "goal": "Trace <one behavior> from <starting symbol> through <named scope>. Return exact symbols and line evidence for <required invariant>; do not review policy or propose changes; stop once the flow and invariant are established."
     },
     {
@@ -126,6 +127,8 @@ Resume only when partial output proves that a small amount remains. Never use a 
 | Three reviewers all asked to “review the diff” | Give each a distinct failure class, source seam, and decision input—or use fewer children. |
 | “Plan and implement the feature” | The master plans and approves; one worker executes the concrete plan. |
 | Entire conversation pasted into `sharedContext` | Pass verified facts, relevant rules, and named artifacts only. |
+| A lane needs decisions already established by the master | Use `contextMode: "fork"`; do not duplicate the conversation in `sharedContext`. |
+| A clean-room or minimal-disclosure review is required | Use `contextMode: "isolated"` explicitly. |
 | Child result copied directly to the user | Compare, verify consequential claims, and synthesize in the master. |
 | Successful child continued for unrelated work | Start a fresh child; preserve continuation for semantically adjacent work. |
 | Continued worker trusts its old diff | Require it to re-read current files/diff/tests before editing. |

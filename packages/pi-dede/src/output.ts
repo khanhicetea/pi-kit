@@ -16,17 +16,23 @@ export function deriveStatus(results: readonly DedeChildResult[]): DedeToolDetai
 }
 
 function childBody(result: DedeChildResult): string {
+  const context = result.contextModeResolved === "fork" && result.forkedFrom
+    ? `Context: forked from master session \`${result.forkedFrom.sessionId}\`${result.forkedFrom.contextTokens !== undefined ? ` (${result.forkedFrom.contextTokens} inherited tokens)` : ""}${result.cacheHitRatio !== undefined ? `; ${(result.cacheHitRatio * 100).toFixed(0)}% prompt-cache read ratio` : ""}.`
+    : result.contextFallbackReason
+      ? `Context: isolated; auto-fork fallback: ${result.contextFallbackReason}.`
+      : "Context: isolated.";
   const session = result.sessionId
     ? `Session: \`${result.sessionId}\` (inspect with \`pi --session ${result.sessionId}\`)`
     : undefined;
   const continuation = result.continuationHandle
     ? `Related continuation available: \`${result.continuationHandle}\`. For a new bounded task that directly benefits from this child's context, call dede_delegate with \"continueFrom\": \"${result.continuationHandle}\". Keep its capabilities unchanged and provide only new facts in sharedContext.`
     : undefined;
-  if (result.status === "succeeded") return [session, result.finalText || "(no output)", continuation].filter(Boolean).join("\n\n");
+  if (result.status === "succeeded") return [context, session, result.finalText || "(no output)", continuation].filter(Boolean).join("\n\n");
   const resume = result.resumeHandle
     ? `Short resume available: \`${result.resumeHandle}\`. Resume only if the partial work is close to useful completion. Call dede_delegate with one agent using \"resume\": \"${result.resumeHandle}\", a goal stating only what remains, and timeoutSeconds from 30 to 180.`
     : undefined;
   const diagnostics = [
+    context,
     session,
     result.errorMessage,
     resume,
@@ -94,6 +100,7 @@ export function cloneDetails(details: DedeToolDetails): DedeToolDetails {
     results: details.results.map((result) => ({
       ...result,
       tools: [...result.tools],
+      forkedFrom: result.forkedFrom ? { ...result.forkedFrom } : undefined,
       usage: { ...result.usage },
       activity: result.activity.map((activity) => ({ ...activity })),
     })),

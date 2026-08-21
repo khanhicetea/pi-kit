@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { buildContinuationTaskPrompt, buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt, getProfilePrompt } from "../src/profiles.ts";
+import { addForkTaskContract, buildContinuationTaskPrompt, buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt, getProfilePrompt } from "../src/profiles.ts";
 import { PROFILES, type ResolvedAgent } from "../src/types.ts";
 
 const worker: ResolvedAgent = {
   id: "worker",
   profile: "worker",
   goal: "implement one approved change",
+  contextMode: "isolated",
+  resolvedContextMode: "isolated",
   systemPrompt: "Follow the supplied API contract.",
   toolPreset: "coding",
   tools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
@@ -67,6 +69,20 @@ describe("profile prompts", () => {
       "# Master-owned objective\nobjective\n\n# Your bounded assignment\ngoal\n\n# Known context and relevant project rules\ncontext\n",
     );
     expect(buildTaskPrompt("objective", "goal")).toContain("Inspect only what the assignment requires.");
+  });
+
+  it("puts fork restrictions in the final user task without changing the inherited system prompt", () => {
+    const prompt = addForkTaskContract(buildTaskPrompt("decide", "inspect", "known"), {
+      ...scout,
+      contextMode: "fork",
+      resolvedContextMode: "fork",
+      visibleTools: ["read", "grep", "write"],
+      inheritedSystemPrompt: "master system",
+    });
+    expect(prompt).toContain("bounded delegated scout");
+    expect(prompt).toContain("Only use tools from this allowed set: read, grep, find, ls");
+    expect(prompt).toContain("blocked at runtime");
+    expect(prompt).not.toContain("master system");
   });
 
   it("gives a finished child a related new task while requiring current-state validation", () => {

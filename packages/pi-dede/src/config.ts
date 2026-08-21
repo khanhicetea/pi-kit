@@ -10,12 +10,25 @@ const MAX_CONFIG_BYTES = 64 * 1024;
 export interface DedeConfig {
   profiles: ProfileDefaults;
   additionalArgs: string[];
+  context: {
+    forkMinTokens: number;
+    forkMaxContextRatio: number;
+  };
 }
 
 interface DedeConfigFile {
   profiles?: ProfileDefaults;
   additionalArgs?: string[];
+  context?: {
+    forkMinTokens?: number;
+    forkMaxContextRatio?: number;
+  };
 }
+
+const DEFAULT_CONTEXT_CONFIG = {
+  forkMinTokens: 4_000,
+  forkMaxContextRatio: 0.7,
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -39,15 +52,33 @@ function parseConfig(content: string, path: string): DedeConfigFile {
     throw new Error(`Could not parse ${path}: invalid JSON`);
   }
   if (!isRecord(parsed)) throw new Error(`${path} must contain a JSON object`);
-  assertKnownKeys(parsed, ["profiles", "additionalArgs"], path);
+  assertKnownKeys(parsed, ["profiles", "additionalArgs", "context"], path);
   if (parsed.additionalArgs !== undefined) {
     if (!Array.isArray(parsed.additionalArgs)) throw new Error(`${path}.additionalArgs must be an array`);
     for (const [index, arg] of parsed.additionalArgs.entries()) {
       if (typeof arg !== "string") throw new Error(`${path}.additionalArgs[${index}] must be a string`);
     }
   }
+  if (parsed.context !== undefined) {
+    if (!isRecord(parsed.context)) throw new Error(`${path}.context must be an object`);
+    assertKnownKeys(parsed.context, ["forkMinTokens", "forkMaxContextRatio"], `${path}.context`);
+    const forkMinTokens = parsed.context.forkMinTokens;
+    if (forkMinTokens !== undefined && (typeof forkMinTokens !== "number" || !Number.isInteger(forkMinTokens) || forkMinTokens < 0)) {
+      throw new Error(`${path}.context.forkMinTokens must be a non-negative integer`);
+    }
+    if (parsed.context.forkMaxContextRatio !== undefined && (
+      typeof parsed.context.forkMaxContextRatio !== "number" ||
+      parsed.context.forkMaxContextRatio <= 0 ||
+      parsed.context.forkMaxContextRatio > 1
+    )) {
+      throw new Error(`${path}.context.forkMaxContextRatio must be greater than 0 and at most 1`);
+    }
+  }
   if (parsed.profiles === undefined) {
-    return { ...(parsed.additionalArgs !== undefined ? { additionalArgs: [...parsed.additionalArgs] } : {}) };
+    return {
+      ...(parsed.additionalArgs !== undefined ? { additionalArgs: [...parsed.additionalArgs] } : {}),
+      ...(parsed.context !== undefined ? { context: { ...parsed.context } } : {}),
+    };
   }
   if (!isRecord(parsed.profiles)) throw new Error(`${path}.profiles must be an object`);
   assertKnownKeys(parsed.profiles, PROFILES, `${path}.profiles`);
@@ -85,6 +116,7 @@ function parseConfig(content: string, path: string): DedeConfigFile {
   return {
     profiles,
     ...(parsed.additionalArgs !== undefined ? { additionalArgs: [...parsed.additionalArgs] } : {}),
+    ...(parsed.context !== undefined ? { context: { ...parsed.context } } : {}),
   };
 }
 
@@ -128,6 +160,11 @@ export async function loadDedeConfig(cwd: string, projectTrusted: boolean): Prom
   return {
     profiles: mergeProfileDefaults(globalConfig.profiles, projectConfig.profiles),
     additionalArgs: [...(projectConfig.additionalArgs ?? globalConfig.additionalArgs ?? [])],
+    context: {
+      ...DEFAULT_CONTEXT_CONFIG,
+      ...globalConfig.context,
+      ...projectConfig.context,
+    },
   };
 }
 

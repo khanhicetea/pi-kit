@@ -167,6 +167,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   });
 
   let stderr = "";
+  let firstEventAt: number | undefined;
   let timedOut = false;
   let cancelled = false;
   let warned = false;
@@ -178,7 +179,10 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   const child = new RpcChild({
     invocation,
     cwd: options.cwd,
-    onProgress: options.onProgress,
+    onProgress: (text, protocol) => {
+      firstEventAt ??= Date.now();
+      options.onProgress?.(text, protocol);
+    },
     onStderr: collectStderr,
   });
   options.manager.track(child.process);
@@ -301,6 +305,13 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     id: options.agent.id,
     profile: options.agent.profile,
     goal: options.agent.goal,
+    contextModeRequested: options.agent.contextMode,
+    contextModeResolved: options.agent.resolvedContextMode,
+    ...(options.agent.contextFallbackReason ? { contextFallbackReason: options.agent.contextFallbackReason } : {}),
+    ...(options.agent.forkedFrom ? { forkedFrom: { ...options.agent.forkedFrom } } : {}),
+    ...((protocol.usage.input + protocol.usage.cacheRead + protocol.usage.cacheWrite) > 0 ? {
+      cacheHitRatio: protocol.usage.cacheRead / (protocol.usage.input + protocol.usage.cacheRead + protocol.usage.cacheWrite),
+    } : {}),
     status,
     model: protocol.model ?? options.agent.model,
     thinking: options.agent.thinking,
@@ -316,6 +327,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     } : { continuationIndex: 0 }),
     finalText: capped.text,
     durationMs: Date.now() - startedAt,
+    ...(firstEventAt !== undefined ? { timeToFirstEventMs: firstEventAt - startedAt } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(protocol.stopReason ? { stopReason: protocol.stopReason } : {}),
     ...(errorMessage ? { errorMessage: truncateUtf8(errorMessage, 8 * 1024).text } : {}),

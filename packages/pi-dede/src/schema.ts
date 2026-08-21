@@ -9,6 +9,7 @@ import {
 } from "./env.ts";
 import {
   BUILTIN_TOOLS,
+  CONTEXT_MODES,
   PROFILES,
   THINKING_LEVELS,
   TOOL_PRESETS,
@@ -39,6 +40,9 @@ const AgentSchema = Type.Object(
       minLength: 1,
       description: "One bounded question or deliverable. For a continuation, give one related new task; for a resume, state only what remains.",
     }),
+    contextMode: Type.Optional(StringEnum(CONTEXT_MODES, {
+      description: "How a new child gets conversation context: auto (default) lets pi-dede reuse a safe master prefix when cache-compatible, fork requires it, and isolated starts clean. Forbidden on continue/resume.",
+    })),
     continueFrom: Type.Optional(Type.String({
       minLength: 1,
       maxLength: 128,
@@ -262,7 +266,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     if (agent.resume !== undefined || agent.continueFrom !== undefined) {
       const mode = agent.resume !== undefined ? "resume" : "continue";
       const handle = agent.resume ?? agent.continueFrom!;
-      const unsupported = ["profile", "systemPrompt", "toolPreset", "tools", "model", "thinking", "env"]
+      const unsupported = ["profile", "contextMode", "systemPrompt", "toolPreset", "tools", "model", "thinking", "env"]
         .filter((key) => agent[key as keyof typeof agent] !== undefined);
       if (unsupported.length > 0) {
         throw new Error(`${label} cannot override ${unsupported.join(", ")} when ${mode === "resume" ? "resuming" : "continuing"}; the old child keeps its profile, system instructions, model, thinking, environment overrides, and tools`);
@@ -283,6 +287,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
         id: agent.id,
         goal: agent.goal,
         tools: [...source.agent.tools],
+        visibleTools: source.agent.visibleTools ? [...source.agent.visibleTools] : undefined,
         env: { ...source.agent.env },
         timeoutSeconds,
         continueFrom: mode === "continue" ? {
@@ -321,7 +326,10 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
       : validateChildEnv(profileDefaults.env, `profiles.${profile}.env`);
     const requestEnv = agent.env === undefined ? {} : validateChildEnv(agent.env, `${label}.env`);
     const env = validateChildEnv(mergeChildEnv([configuredEnv, requestEnv]), `${label}.effectiveEnv`);
-    const modelPattern = agent.model ?? profileDefaults?.model;
+    // Auto/fork are cache-first: unless the caller explicitly selects a model,
+    // retain the master's exact model. Profile model defaults apply to an
+    // explicitly isolated child, where cache-prefix fidelity is not expected.
+    const modelPattern = agent.model ?? (agent.contextMode === "isolated" ? profileDefaults?.model : undefined);
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
     if (
@@ -340,6 +348,8 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
       id: agent.id,
       profile,
       goal: agent.goal,
+      contextMode: agent.contextMode ?? "auto",
+      resolvedContextMode: "isolated",
       systemPrompt: agent.systemPrompt,
       toolPreset,
       tools,

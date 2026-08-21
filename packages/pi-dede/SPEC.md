@@ -8,7 +8,7 @@
 
 ## 1. Product boundary
 
-`pi-dede` provides short, synchronous delegation to isolated Pi children. It supports two workflows:
+`pi-dede` provides short, synchronous delegation to independent Pi children. A new child may start isolated or from a safe fork of the master conversation. It supports two workflows:
 
 1. fan out one to three bounded evidence questions after the master has inspected enough to define exact scope;
 2. run one mutation-capable worker after the master has approved a concrete plan.
@@ -26,9 +26,9 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 3. **Bounded synchronous runs:** 180-second default, 1800-second maximum.
 4. **Bounded reasoning:** profile defaults are `low` or `medium`, not inherited from the master.
 5. **Small outputs:** children are instructed to use at most 400 words; model-visible output is capped at 4 KiB per child and 12 KiB aggregate.
-6. **Least privilege:** read-only excludes `bash`; at most one mutation-capable child runs per call, and a runtime-wide mutation lease serializes writers across concurrent calls.
+6. **Least privilege with cache fidelity:** isolated children expose only allowed tools. Forked children retain the master's visible tool definitions for prompt-cache compatibility, while an internal `tool_call` hook blocks every call outside the profile's allowed subset. At most one mutation-capable child runs per call, and a runtime-wide mutation lease serializes writers across concurrent calls.
 7. **Bounded lineage reuse:** a successful child may receive a related new bounded task with a normal deadline; a timed-out child may receive only a 30–180 second solo completion attempt.
-8. **No recursive delegation:** children may use normal Pi extension discovery, but receive `PI_DEDE_DEPTH=1` so pi-dede does not register recursively.
+8. **No recursive delegation:** an explicit internal child bootstrap registers the same visible `dede_delegate` definition for cache fidelity, but its execution always fails and the tool policy blocks it.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
 10. **Bidirectional headless transport:** children run `pi --mode rpc` so the master delivers the task, steers a child near its deadline, and aborts gracefully over stdin/stdout, reserving process-tree termination for the hard deadline. A soft deadline warning always precedes the hard kill.
 11. **Progressive orchestration guidance:** the package exposes a parent-only skill that teaches the delegation gate, compact lane contracts, distinct fan-out, verification, and bounded recipes without widening the runtime workflow surface.
@@ -46,12 +46,14 @@ Conceptual input:
 type Profile = "scout" | "reviewer" | "worker" | "custom";
 type ToolPreset = "read-only" | "coding" | "none" | "custom";
 type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+type ContextMode = "auto" | "fork" | "isolated";
 type BuiltinTool = "read" | "grep" | "find" | "ls" | "bash" | "edit" | "write";
 
 interface AgentRequest {
   id: string;                 // /^[a-z][a-z0-9-]{0,31}$/
   profile?: Profile;          // default: custom; forbidden on continue/resume
   goal: string;               // bounded assignment; only what remains on resume
+  contextMode?: ContextMode;  // default auto; forbidden on continue/resume
   continueFrom?: string;      // handle from a successfully finished child
   resume?: string;            // handle from a timed-out child
   systemPrompt?: string;      // narrow role constraints; forbidden on continue/resume
@@ -71,7 +73,7 @@ interface DelegateRequest {
 }
 ```
 
-Unknown fields are rejected. `continueFrom` and `resume` are mutually exclusive, and the same lineage handle may appear only once per request. A request containing `resume` must contain exactly one agent. Handles must be available in the current master runtime and are claimed atomically, all-or-nothing. Continued and resumed agents keep the old profile, system prompt, model, thinking, environment overrides, additional arguments, and tools; `profile`, `systemPrompt`, `toolPreset`, `tools`, `model`, `thinking`, and `env` overrides are rejected. Only `id`, `goal`, and `timeoutSeconds` may change. A continuation may use the normal 30–1800 second deadline; a resume remains limited to 30–180 seconds.
+Unknown fields are rejected. `continueFrom` and `resume` are mutually exclusive, and the same lineage handle may appear only once per request. A request containing `resume` must contain exactly one agent. Handles must be available in the current master runtime and are claimed atomically, all-or-nothing. Continued and resumed agents keep the old context mode, profile, system prompt, model, thinking, environment overrides, additional arguments, and tools; `contextMode`, `profile`, `systemPrompt`, `toolPreset`, `tools`, `model`, `thinking`, and `env` overrides are rejected. Only `id`, `goal`, and `timeoutSeconds` may change. A continuation may use the normal 30–1800 second deadline; a resume remains limited to 30–180 seconds.
 
 String limits use UTF-8 bytes:
 
@@ -97,7 +99,7 @@ Validation completes before temporary files, permits, or child processes are cre
 
 Effective thinking precedence is explicit request, profile sidecar configuration, then built-in profile default. The master's thinking level is not inherited.
 
-Effective model precedence is explicit request, profile sidecar configuration, then master model. Children are separate Pi processes but retain normal extension discovery. A provider registered through an installed project/global extension is therefore allowed without extra arguments; an extension loaded only in the master can be loaded explicitly through `additionalArgs` with `-e`/`--extension`. If child extension discovery is disabled with `--no-extensions` and no explicit extension is supplied, validation rejects the setup before launch.
+Effective model precedence for `auto`/`fork` is explicit request, then master model; this keeps the default cache-compatible. For explicit `isolated` mode it is explicit request, profile sidecar configuration, then master model. Children are separate Pi processes but retain normal extension discovery. A provider registered through an installed project/global extension is therefore allowed without extra arguments; an extension loaded only in the master can be loaded explicitly through `additionalArgs` with `-e`/`--extension`. If child extension discovery is disabled with `--no-extensions` and no explicit extension is supplied, validation rejects the setup before launch.
 
 Effective environment precedence is inherited master process environment, global profile sidecar environment, trusted-project profile sidecar environment, explicit `agents[].env`, then pi-dede's internal control fields. Profile environments merge by variable name instead of replacing the complete map.
 
@@ -106,7 +108,7 @@ Sidecar configuration paths:
 - `~/.pi/agent/pi-dede.json`
 - `.pi/pi-dede.json` for trusted projects only
 
-The config accepts `profiles.<profile>.model`, `profiles.<profile>.thinking`, `profiles.<profile>.env`, optional `profiles.<profile>.additionalArgs`, and a top-level `additionalArgs` string array. Extra arguments are inserted after pi-dede's built-in child options and before the task prompt. The profile-specific list replaces the shared list for that profile when present, including an empty list; a trusted project's top-level array replaces the global array and profile fields override corresponding global profile fields. Environment maps contain portable string keys and string values. Session/delegation control names and process-startup variables (`PATH`, Node/Bun options, dynamic-loader variables, and `BASH_ENV`) are protected from overrides.
+The config accepts `profiles.<profile>.model`, `profiles.<profile>.thinking`, `profiles.<profile>.env`, optional `profiles.<profile>.additionalArgs`, a top-level `additionalArgs` string array, and `context.forkMinTokens`/`context.forkMaxContextRatio`. The context defaults are 4,000 tokens and 0.7. Extra arguments are inserted after pi-dede's built-in child options and before the task prompt. Arguments that change the model, system prompt, extension set, context resources, or tool surface make `auto` fall back to isolation. The profile-specific list replaces the shared list for that profile when present, including an empty list; a trusted project's top-level array replaces the global array and profile fields override corresponding global profile fields. Environment maps contain portable string keys and string values. Session/delegation control names and process-startup variables (`PATH`, Node/Bun options, dynamic-loader variables, and `BASH_ENV`) are protected from overrides.
 
 ## 5. Tool capabilities
 
@@ -117,7 +119,7 @@ The config accepts `profiles.<profile>.model`, `profiles.<profile>.thinking`, `p
 | `none` | none | read-only |
 | `custom` | exact validated list | derived from list |
 
-`bash`, `edit`, and `write` are always mutation-capable. A run may contain at most one mutation-capable child; the others must be read-only. (Two concurrent writers can clobber one another's edits, so parallel mutation is rejected.) Providing an explicit `tools` list selects the `custom` preset directly, so `toolPreset` may be omitted.
+`bash`, `edit`, and `write` are always mutation-capable. A run may contain at most one mutation-capable child; the others must be read-only. (Two concurrent writers can clobber one another's edits, so parallel mutation is rejected.) Providing an explicit `tools` list selects the `custom` preset directly, so `toolPreset` may be omitted. In fork mode this table defines executable tools; the provider still receives the master's complete active tool-definition surface, and runtime policy blocks everything outside the selected subset.
 
 ## 6. Scheduling
 
@@ -141,17 +143,22 @@ Each child is a separate process launched with `shell: false`, conceptually:
 pi --mode rpc --no-approve \
   --session-dir <pi-project-session-dir> --session <0600-child-session-file> \
   --no-prompt-templates --no-themes \
-  --append-system-prompt <0600-system-file> \
-  --tools read,grep,find,ls \
+  --extension <pi-dede-child-bootstrap> \
+  --system-prompt <0600-system-file> \
+  --tools <isolated-allowed-or-fork-master-visible-tools> \
   --model <provider/model> --thinking <level> \
   [effective shared-or-profile additionalArgs]
 ```
 
 The task assignment is delivered as an RPC `prompt` command over the child's stdin; it never appears in process arguments. The child stays headless and uses no terminal multiplexer. The master reads the LF-delimited JSONL event stream from stdout for state (final text, usage, activity) and writes control commands back over stdin: the initial `prompt`, a `steer` warning near the deadline, and an `abort` at the deadline. Extension UI dialogs emitted by the child are auto-cancelled so an autonomous child can never block waiting for a human.
 
-The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. A continuation or resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation, and sends a new RPC `prompt`. A continuation prompt frames a new related task and requires re-reading mutable files, diffs, or tests; a resume prompt frames only unfinished work. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, continuation-index, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
+The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. An isolated session starts with only its header. A forked session copies the active master path through the parent of the assistant entry containing the unresolved `dede_delegate` call, so the child never starts with a dangling tool call. `auto` requires a persistent safe point, the same model, compatible required tools, context at or above `forkMinTokens`, context at or below `forkMaxContextRatio`, and no child arguments known to alter prompt fidelity. A forced `fork` fails if these structural compatibility requirements are unavailable but ignores the economic thresholds.
 
-The system prompt tells every child to:
+The forked child receives the master's exact effective system prompt through a final `before_agent_start` override and retains the master's active tool names. Its bounded role, output contract, and allowed tool subset are placed in the new user task. The child bootstrap blocks excluded tools and recursive delegation. For provider payloads exposing `prompt_cache_key`, it replaces the new child session key with the retained parent affinity key; other providers remain untouched. Actual cache reads and the derived cache-read ratio are reported rather than assumed.
+
+A continuation or resume launches Pi with the same directory and session ID, causing Pi to load the previous child conversation, and sends a new RPC `prompt`. A continuation prompt frames a new related task and requires re-reading mutable files, diffs, or tests; a resume prompt frames only unfinished work. Child sessions appear in normal user session listings and remain available for later inspection with `pi --session <id>`. The child inherits the master's environment before profile and per-agent overrides are applied. Environment fields include run, agent, parent-session, context mode, allowed tools, cache affinity, continuation-index, resume-attempt, and recursion-depth IDs; inherited `PI_SESSION_ID`, `PI_SESSION_FILE`, and stale `PI_DEDE_*` fields are removed before authoritative fields are injected.
+
+The isolated system prompt, or the final user-level fork contract, tells every child to:
 
 - complete only the bounded assignment and stop when answered;
 - avoid planning, follow-on work, and scope expansion;
@@ -175,7 +182,7 @@ Parent abort, session replacement, reload, or shutdown cancels queued work, send
 
 ## 9. JSON collection and progress
 
-The runner consumes Pi JSONL incrementally with a 2 MiB line cap. It records finalized assistant text, usage, stop reason, bounded activity, and protocol completion. Thinking content is ignored. Up to 32 KiB of unfinished text deltas is retained only as a timeout fallback so the master can judge whether a short continuation is worthwhile.
+The runner consumes Pi JSONL incrementally with a 2 MiB line cap. It records finalized assistant text, usage, stop reason, bounded activity, time to first child event, and protocol completion. Thinking content is ignored. Up to 32 KiB of unfinished text deltas is retained only as a timeout fallback so the master can judge whether a short continuation is worthwhile.
 
 Progress rules:
 
@@ -242,7 +249,7 @@ UI methods are optional; execution works in TUI, RPC, JSON, and print modes.
 
 ## 12. Security model
 
-Tool allowlists are capability reduction, not an OS sandbox. Children retain the user's OS permissions, inherit the master's process environment, and read-only children may read any OS-readable file. Extensions, skills, and context files use Pi's normal discovery unless changed by the effective `additionalArgs`; prompt templates and themes are disabled by default. Relevant trusted rules should be passed explicitly in concise `sharedContext`.
+Tool policy is capability reduction, not an OS sandbox. Children retain the user's OS permissions, inherit the master's process environment, and read-only children may read any OS-readable file. Fork mode exposes the master's tool definitions to the model but mechanically blocks excluded calls before execution. A fork also sends the selected master conversation prefix, including any sensitive content on that path, to the configured model. Use isolated mode for minimal disclosure or clean-room review. Extensions, skills, and context files use Pi's normal discovery unless changed by the effective `additionalArgs`; prompt templates and themes are disabled by default. Relevant trusted rules should be passed explicitly in concise `sharedContext` for isolated children.
 
 Explicit `agents[].env` values are part of the tool call and therefore stored in the master transcript. Profile-configured values are not copied into prompts, progress, or results, but are plaintext in the sidecar file. Protected startup/control variables prevent environment overrides from changing the spawned executable, injecting runtime preload code, restoring the parent's session identity, or enabling recursive delegation.
 
@@ -253,7 +260,7 @@ Prompts use a mode-`0700` run directory and mode-`0600` files. The task assignme
 - planner profile or in-run dependency DAGs;
 - background agents or result notifications;
 - recursive delegation;
-- arbitrary session-ID reuse, role handoff, clone/fork branching, or cross-master-runtime continuation;
+- arbitrary user-supplied session-ID reuse, role handoff, user-selected fork points, or cross-master-runtime continuation;
 - more than three active children;
 - two or more mutation-capable children in a single run or concurrently across calls;
 - inheritance of the master's in-memory resource/configuration state;

@@ -2,14 +2,17 @@ import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadDedeConfig } from "./config.ts";
-import { buildContinuationTaskPrompt, buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
+import { registerChildRuntime } from "./child-runtime.ts";
+import { captureMasterForkSnapshot, resolveAgentContext } from "./fork-context.ts";
+import { addForkTaskContract, buildContinuationTaskPrompt, buildResumeTaskPrompt, buildSystemPrompt, buildTaskPrompt } from "./profiles.ts";
 import { aggregateUsages } from "./json-events.ts";
 import { cloneDetails, deriveStatus, formatModelContent, formatSettledSummary, progressContent, zeroUsage } from "./output.ts";
 import { renderDedeCall, renderDedeResult } from "./render.ts";
 import { ChildResumeStore, type ChildLineageLease } from "./resume.ts";
 import { ArtifactManager, ChildProcessManager, createSecureRunDirectory, removeRunDirectory, runChild, writeSecurePrompt } from "./runner.ts";
-import { DedeDelegateSchema, type DedeDelegateInput, MAX_AGENTS_PER_RUN, validateAndResolve } from "./schema.ts";
+import { type DedeDelegateInput, MAX_AGENTS_PER_RUN, validateAndResolve } from "./schema.ts";
 import { abortError, FifoSemaphore } from "./scheduler.ts";
+import { DEDE_TOOL_METADATA } from "./tool-definition.ts";
 import type { DedeChildResult, DedeToolDetails, DetailedUsage, ResolvedAgent } from "./types.ts";
 
 const PROGRESS_THROTTLE_MS = 200;
@@ -20,6 +23,10 @@ function queuedResult(agent: ResolvedAgent): DedeChildResult {
     id: agent.id,
     profile: agent.profile,
     goal: agent.goal,
+    contextModeRequested: agent.contextMode,
+    contextModeResolved: agent.resolvedContextMode,
+    ...(agent.contextFallbackReason ? { contextFallbackReason: agent.contextFallbackReason } : {}),
+    ...(agent.forkedFrom ? { forkedFrom: { ...agent.forkedFrom } } : {}),
     status: "queued",
     model: agent.model,
     thinking: agent.thinking,
@@ -45,7 +52,11 @@ function sessionId(ctx: ExtensionContext): string {
 }
 
 export default function dedeExtension(pi: ExtensionAPI): void {
-  if (Number(process.env.PI_DEDE_DEPTH ?? "0") !== 0) return;
+  if (Number(process.env.PI_DEDE_DEPTH ?? "0") !== 0) {
+    if (process.env.PI_DEDE_CHILD_BOOTSTRAP === "1") return;
+    registerChildRuntime(pi);
+    return;
+  }
 
   const shutdownController = new AbortController();
   const processManager = new ChildProcessManager();
@@ -93,34 +104,16 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
-    name: "dede_delegate",
-    label: "Đệ Đệ",
-    description: "After the master has inspected enough to define narrow scope, fan out one to three bounded tasks to isolated Pi sub-agents. A successfully finished child returns a continuation handle for a later related task with the same conversation and capabilities. A timed-out child returns a resume handle for one short completion attempt. Independent read-only lanes may run in parallel; at most one mutation-capable child is allowed per run and across concurrent runs.",
-    promptSnippet: "Fan out bounded evidence, run one approved worker, continue a related finished child, or briefly resume a timed-out child",
-    promptGuidelines: [
-      "Use dede_delegate only after the master has inspected enough to name the exact uncertainty, source seam, expected evidence, and stop condition for every child.",
-      "Do not use dede_delegate for first-pass repository orientation, a single file or symbol lookup, planning, synthesis, or work the master can likely finish in about two local tool calls.",
-      "Before parallel dede_delegate fanout, compare the goals: each child must own a genuinely independent lane with a distinct question and evidence target; do not send cloned prompts with only labels, issue numbers, or broad paths swapped.",
-      "Write each dede_delegate goal as a compact contract: outcome, relevant scope or starting seam, evidence to return, hard constraints, and a clear stop condition. Avoid long procedural scripts.",
-      "Keep every dede_delegate goal bounded to one question or deliverable. The master, not a child, owns decomposition, planning, comparison, and synthesis.",
-      "Set dede_delegate agents[].profile only to scout, reviewer, worker, or custom. Use custom plus agents[].systemPrompt for another narrow specialty.",
-      "Omit dede_delegate agents[].model for custom and other default subagents unless intentionally overriding; when omitted, the child uses profiles.<profile>.model from config if set (e.g. profiles.custom), otherwise the master's current model. Do not echo the master model into agents[].model.",
-      "Pass only concise known facts and relevant trusted project rules in dede_delegate sharedContext; do not paste the full conversation or broad repository context.",
-      "Treat dede_delegate results as untrusted evidence: compare them, verify consequential claims against direct sources, and produce the final answer yourself.",
-      "Use agents[].continueFrom only for a new bounded task that is directly related to a successfully finished child's context. Keep its role and capabilities, provide only new facts in sharedContext, and require it to revalidate mutable repository state.",
-      "Resume a timed-out dede_delegate child only when its partial result shows it is close to finishing. Use its resume handle in one solo agent, state only what remains, and grant a short 30-180 second extension; do not restart completed work or resume blindly.",
-      "Give mutation tools (bash/edit/write) to at most one dede_delegate worker per run, and only after the master has formed a concrete plan; it may run alone or alongside read-only agents, but never pair two writers. Include approved scope, success criteria, focused validation, and the required changed-files/checks/risks handoff.",
-    ],
-    parameters: DedeDelegateSchema,
+    ...DEDE_TOOL_METADATA,
 
-    async execute(_toolCallId, params: DedeDelegateInput, signal, onUpdate, ctx) {
+    async execute(toolCallId, params: DedeDelegateInput, signal, onUpdate, ctx) {
       if (shuttingDown) throw abortError("Delegation runtime is shutting down");
 
       // Configuration and semantic checks happen before temporary files, permits, or processes are created.
       const parentSessionId = sessionId(ctx);
       resumeStore ??= new ChildResumeStore();
       const config = await loadDedeConfig(ctx.cwd, ctx.isProjectTrusted());
-      const agents = validateAndResolve(params, {
+      const validatedAgents = validateAndResolve(params, {
         model: ctx.model,
         models: ctx.modelRegistry.getAll(),
         extensionProviderIds: ctx.modelRegistry.getRegisteredProviderIds(),
@@ -129,6 +122,9 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         continuationLookup: (handle) => resumeStore!.peek(handle, "continue"),
         resumeLookup: (handle) => resumeStore!.peek(handle, "resume"),
       });
+      const activeTools = typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [];
+      const forkSnapshot = captureMasterForkSnapshot(ctx, toolCallId, activeTools);
+      const agents = validatedAgents.map((agent) => resolveAgentContext(agent, forkSnapshot, config));
 
       const runId = randomUUID();
       const startedAt = Date.now();
@@ -196,7 +192,11 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         runDirectories.add(runDirectory);
 
         const systemPromptPaths = await Promise.all(agents.map((agent) =>
-          writeSecurePrompt(runDirectory!, `${agent.id}-system.md`, buildSystemPrompt(agent))
+          writeSecurePrompt(
+            runDirectory!,
+            `${agent.id}-system.md`,
+            agent.resolvedContextMode === "fork" ? agent.inheritedSystemPrompt! : buildSystemPrompt(agent),
+          )
         ));
 
         const lineageClaims: Array<{ handle: string; availability: "resume" | "continue" }> = [];
@@ -216,15 +216,18 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           try {
             lease = lineageHandle
               ? claimedLineages.get(lineageHandle)!
-              : await resumeStore!.allocate(agent, ctx.cwd);
+              : agent.resolvedContextMode === "fork"
+                ? await resumeStore!.allocateFork(agent, forkSnapshot!.sessionPath, forkSnapshot!.entryId, ctx.cwd)
+                : await resumeStore!.allocate(agent, ctx.cwd);
+            const baseTask = agent.resume
+              ? buildResumeTaskPrompt(params.objective, agent.goal, params.sharedContext)
+              : agent.continueFrom
+                ? buildContinuationTaskPrompt(params.objective, agent.goal, params.sharedContext)
+                : buildTaskPrompt(params.objective, agent.goal, params.sharedContext);
             const taskPath = await writeSecurePrompt(
               runDirectory!,
               `${agent.id}-task.md`,
-              agent.resume
-                ? buildResumeTaskPrompt(params.objective, agent.goal, params.sharedContext)
-                : agent.continueFrom
-                  ? buildContinuationTaskPrompt(params.objective, agent.goal, params.sharedContext)
-                  : buildTaskPrompt(params.objective, agent.goal, params.sharedContext),
+              addForkTaskContract(baseTask, agent),
             );
 
             if (agent.mutationCapable) mutationPermit = await mutationScheduler.acquire(combinedSignal);

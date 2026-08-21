@@ -42,12 +42,14 @@ describe("extension registration", () => {
     expect(on).toHaveBeenCalledWith("agent_settled", expect.any(Function));
   });
 
-  it("registers nothing in a child process", () => {
+  it("registers a cache-compatible blocked delegation tool and enforcement hooks in a child process", () => {
     process.env.PI_DEDE_DEPTH = "1";
     const registerTool = vi.fn();
     const on = vi.fn();
     dedeExtension({ registerTool, on } as unknown as ExtensionAPI);
-    expect(registerTool).not.toHaveBeenCalled();
-    expect(on).not.toHaveBeenCalled();
+    expect(registerTool).toHaveBeenCalledTimes(1);
+    expect(registerTool.mock.calls[0][0]).toMatchObject({ name: "dede_delegate", label: "Đệ Đệ" });
+    expect(on).toHaveBeenCalledWith("tool_call", expect.any(Function));
+    expect(on).toHaveBeenCalledWith("before_provider_request", expect.any(Function));
   });
 });

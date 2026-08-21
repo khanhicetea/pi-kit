@@ -1,6 +1,6 @@
 ---
 name: pi-dede
-description: Orchestrate short, isolated Pi sub-agents with dede_delegate. Use when a parent agent needs bounded parallel evidence, one focused review, one approved implementation worker, a related continuation of a successful child, or a deliberate short resume after timeout.
+description: Orchestrate short Pi sub-agents with dede_delegate using automatic master-context forks or isolated starts. Use when a parent agent needs bounded parallel evidence, one focused review, one approved implementation worker, a related continuation of a successful child, or a deliberate short resume after timeout.
 ---
 
 # Pi Đệ Đệ
@@ -29,6 +29,14 @@ For each child, provide:
 - **Stop condition:** when enough evidence exists or the bounded change is complete.
 
 Set `objective` to the decision or outcome the master will own. Put only verified facts and relevant trusted repository rules in `sharedContext`.
+
+For each new child, choose `contextMode` deliberately when the default `auto` is not enough:
+
+- use `fork` when decisions, discoveries, terminology, or constraints already established in the master conversation materially help the lane;
+- use `isolated` for clean-room evidence, minimal conversation disclosure, a deliberately different model, or a tiny independent task;
+- omit it or use `auto` when pi-dede should select a cache-compatible fork only when its context economics permit one.
+
+Forked children retain the master's visible tool definitions for cache fidelity, but pi-dede blocks execution outside the profile/tool subset. Do not widen `tools` merely because the definitions are already visible.
 
 Before parallel fanout, compare the contracts. Do not send clone prompts with only labels, issue numbers, or broad paths swapped. Every lane must remain distinct without its id.
 

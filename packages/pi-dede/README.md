@@ -1,6 +1,6 @@
 # Đệ Đệ (`pi-dede`)
 
-A deliberately narrow Pi extension for short, isolated delegation. It helps a master fan out bounded evidence questions after local inspection, or hand one approved implementation to a solo worker.
+A deliberately narrow Pi extension for short delegation. It helps a master fan out bounded evidence questions after local inspection, or hand one approved implementation to a solo worker. New children default to `auto` context selection: pi-dede can fork a safe prefix of the master conversation for context and prompt-cache reuse, or retain the original isolated start.
 
 `pi-dede` is synchronous: the master waits for the children. Its defaults therefore favor fewer agents, low reasoning effort, small outputs, and short deadlines.
 
@@ -41,7 +41,12 @@ The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads 
 ## Features
 
 - One LLM-callable tool: `dede_delegate`
-- One to three isolated, ephemeral children per call
+- One to three independent persistent children per call
+- `auto`, `fork`, and `isolated` context modes for new children
+- Safe master-session forks that exclude the unresolved delegation tool call
+- Exact master system prompt and visible tool surface in fork mode for cache fidelity
+- Runtime-enforced child tool subsets even when forked children retain master-visible tool definitions
+- Parent prompt-cache affinity with measured cache-read ratios where the provider exposes it
 - Global three-process FIFO limit across concurrent calls
 - Parallel read-only evidence collection
 - One explicitly authorized coding worker per mutation run
@@ -109,6 +114,30 @@ The two lanes below answer different questions and request different evidence: o
 
 Independent children start as global slots become available. Results preserve request order.
 
+## Reuse the master conversation
+
+Set `agents[].contextMode` on a new child:
+
+- `auto` (default) forks when the master has a safe persistent checkpoint, the model and required tools are compatible, and configured context economics allow it; otherwise it starts isolated and reports the reason;
+- `fork` requires a safe compatible master fork and fails before launch when it cannot provide one;
+- `isolated` uses the original clean child session and compact `sharedContext` contract.
+
+```json
+{
+  "objective": "Check the edge case using decisions already established in this conversation",
+  "agents": [{
+    "id": "edge",
+    "profile": "scout",
+    "contextMode": "fork",
+    "goal": "Inspect the named edge case, return exact evidence, and stop."
+  }]
+}
+```
+
+The fork ends immediately before the assistant message containing the unresolved `dede_delegate` call. Each child receives its own persistent session file and new task prompt. In fork mode the child keeps the master's exact effective system prompt and visible tool definitions; the final task prompt states the bounded role and allowed subset, and an internal `tool_call` hook blocks every tool outside that subset. Recursive delegation remains blocked.
+
+Forking is not always cheaper. `auto` defaults to a 4,000-token minimum and a 70% context-window ceiling, requires the same model, and falls back when child-specific arguments alter the prompt/model/tool surface. Results disclose the resolved mode, inherited token estimate, provider-reported cache reads, cache ratio, time to first child event, and any fallback reason.
+
 ## Worker
 
 After the master has synthesized evidence and approved a concrete plan, run one mutation-capable worker. It may run in its own call, or alongside read-only scouts in a single call—but a run allows at most one mutation-capable child.
@@ -159,7 +188,7 @@ Continuation rules:
 - distinct read-only continuation handles may run in parallel, but one handle can be claimed only once per call and claims are all-or-nothing;
 - successful handles are scoped to the current master runtime, retained for 30 idle minutes, and limited to the 12 most recent lineages; eviction never deletes the inspectable Pi session.
 
-Use the opaque handle rather than a raw `sessionId`: the handle preserves trusted lineage configuration and provides an atomic lease. Clone/fork are intentionally not used; they are branching primitives, while `continueFrom` appends a related task to the existing active branch.
+Use the opaque handle rather than a raw `sessionId`: the handle preserves trusted lineage configuration and provides an atomic lease. A master-context fork creates the initial child lineage; `continueFrom` then appends related work to that child's active branch.
 
 ## Short continuation after timeout
 
@@ -214,6 +243,7 @@ Persistent profile model, thinking, and environment overrides—and extra child 
 ```json
 {
   "additionalArgs": ["-e", "/absolute/path/to/child-extension.ts"],
+  "context": { "forkMinTokens": 4000, "forkMaxContextRatio": 0.7 },
   "profiles": {
     "scout": {
       "model": "anthropic/claude-haiku-4-5",
@@ -228,9 +258,11 @@ Persistent profile model, thinking, and environment overrides—and extra child 
 }
 ```
 
+`context.forkMinTokens` is a non-negative integer. `context.forkMaxContextRatio` is greater than zero and at most one. Global values are merged with trusted-project field overrides.
+
 `additionalArgs` is inserted into every child command after pi-dede's built-in options and before the task prompt. The top-level list is shared by all profiles. If `profiles.<profile>.additionalArgs` is present, it replaces the shared list for that profile, including when it is an empty array. A trusted project's top-level `additionalArgs` array replaces the global array; profile fields override the corresponding global profile fields.
 
-Project values override global model/thinking fields and merge environment values by variable name. Per-agent values then override configured environment values. The complete child environment precedence is inherited master process environment, global profile environment, trusted-project profile environment, per-agent environment, then pi-dede's internal control variables.
+Project values override global model/thinking fields and merge environment values by variable name. Per-agent values then override configured environment values. For model selection, `auto` and `fork` retain the master model unless `agents[].model` is explicit; profile model defaults apply to explicit `isolated` children. The complete child environment precedence is inherited master process environment, global profile environment, trusted-project profile environment, per-agent environment, then pi-dede's internal control variables.
 
 Configuration is read on every delegation. Project configuration is ignored unless Pi trusts the project. Environment names must be portable identifiers; session/delegation variables and process-startup controls such as `PATH`, `NODE_OPTIONS`, loader variables, and `BASH_ENV` cannot be overridden. The final merged override map may contain at most 64 variables and 16 KiB total, with an 8 KiB limit per value.
 
@@ -260,9 +292,9 @@ Children are separate Pi processes, but retain Pi's normal extension discovery. 
 
 ## Security and isolation
 
-Children run as separate `pi --mode rpc` processes driven over a stdin/stdout JSON channel. The task assignment is delivered as an RPC `prompt` over stdin rather than as a command-line argument, so no user-controlled text appears in `argv`. They retain Pi's normal extension, skill, and context-file discovery, while prompt-template and theme discovery remain disabled by pi-dede's built-in flags; configured shared or profile `additionalArgs` can explicitly alter this setup. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Prompts are mode-`0600` temporary files; the role contract is appended via `--append-system-prompt`, which Pi reads as file contents.
+Children run as separate `pi --mode rpc` processes driven over a stdin/stdout JSON channel. The task assignment is delivered as an RPC `prompt` over stdin rather than as a command-line argument, so no user-controlled text appears in `argv`. They retain Pi's normal extension, skill, and context-file discovery, while prompt-template and theme discovery remain disabled by pi-dede's built-in flags; configured shared or profile `additionalArgs` can explicitly alter this setup. Each uses an exact session ID in Pi's normal project session directory so timed-out work can be continued briefly and users can inspect it later with `pi --session <id>`. Private mode-`0600` prompt files hold system/task content. An explicitly loaded internal child bootstrap enforces tool policy, restores the exact inherited system prompt after normal child prompt assembly, blocks recursion, and rewrites supported provider cache-affinity fields.
 
-Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool allowlists reduce model capabilities; they are not an OS sandbox. Read-only children can read any path available to the user. Discovered context files and skills may affect the child, so use `sharedContext` and `additionalArgs` to control the child configuration explicitly.
+Child processes still have the user's OS permissions and inherit the master's process environment before configured overrides are applied. Tool blocking reduces model capabilities; it is not an OS sandbox. Read-only children can read any path available to the user. A fork sends the selected master conversation prefix to the same configured model and therefore inherits any sensitive text in that prefix; use `isolated` when minimal disclosure or clean-room review matters. Discovered context files and skills may affect isolated children, so use `sharedContext` and `additionalArgs` to control that configuration explicitly.
 
 See [SPEC.md](./SPEC.md) for the complete current contract.
 

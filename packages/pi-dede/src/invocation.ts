@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { basename } from "node:path";
 import { mergeChildEnv, removeReservedChildEnv } from "./env.ts";
 import type { ResolvedAgent } from "./types.ts";
@@ -38,8 +39,9 @@ export interface ChildInvocationOptions {
  *
  * Children run `pi --mode rpc`. The task assignment is delivered over the RPC
  * stdin channel (a `prompt` command), never as an argument, so no user-controlled
- * text appears in `argv`. The role contract is appended from a private
- * mode-`0600` file via `--append-system-prompt`, which Pi reads as file contents.
+ * text appears in `argv`. Isolated children append their private role contract;
+ * forked children load the captured master prompt and restore it exactly from
+ * the internal child bootstrap immediately before the agent turn.
  */
 export function buildChildInvocation(options: ChildInvocationOptions): PiInvocation {
   const { agent } = options;
@@ -50,12 +52,17 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
     "--no-approve",
     "--no-prompt-templates",
     "--no-themes",
-    "--system-prompt", "You are an isolated delegated Pi sub-agent.",
-    "--append-system-prompt", options.systemPromptPath,
+    "--extension", fileURLToPath(new URL("./child-bootstrap.ts", import.meta.url)),
   ];
 
-  if (agent.tools.length === 0) args.push("--no-tools");
-  else args.push("--tools", agent.tools.join(","));
+  const visibleTools = agent.resolvedContextMode === "fork" ? (agent.visibleTools ?? []) : agent.tools;
+  if (agent.resolvedContextMode === "fork") args.push("--system-prompt", options.systemPromptPath);
+  else args.push(
+    "--system-prompt", "You are an isolated delegated Pi sub-agent.",
+    "--append-system-prompt", options.systemPromptPath,
+  );
+  if (visibleTools.length === 0) args.push("--no-tools");
+  else args.push("--tools", visibleTools.join(","));
   args.push("--model", agent.model, "--thinking", agent.thinking);
   args.push(...(options.additionalArgs ?? []));
 
@@ -69,6 +76,11 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
   env.PI_DEDE_CHILD_SESSION_ID = options.childSessionId;
   env.PI_DEDE_RESUME_ATTEMPT = String(agent.resume?.attempt ?? 0);
   env.PI_DEDE_CONTINUATION_INDEX = String(agent.continueFrom?.continuationIndex ?? agent.resume?.continuationIndex ?? 0);
+  env.PI_DEDE_CONTEXT_MODE = agent.resolvedContextMode;
+  env.PI_DEDE_CHILD_BOOTSTRAP = "1";
+  env.PI_DEDE_ALLOWED_TOOLS = JSON.stringify(agent.tools);
+  if (agent.cacheAffinityKey) env.PI_DEDE_CACHE_AFFINITY_KEY = agent.cacheAffinityKey;
+  if (agent.resolvedContextMode === "fork") env.PI_DEDE_MASTER_SYSTEM_PROMPT_PATH = options.systemPromptPath;
 
   return { ...invocation, env };
 }

@@ -6,6 +6,8 @@ const agent = (tools: ResolvedAgent["tools"]): ResolvedAgent => ({
   id: "scout",
   profile: "scout",
   goal: "SECRET GOAL THAT MUST NOT BE IN ARGV",
+  contextMode: "isolated",
+  resolvedContextMode: "isolated",
   toolPreset: tools.length ? "custom" : "none",
   tools,
   additionalArgs: [],
@@ -120,5 +122,25 @@ describe("child invocation", () => {
     const invocation = buildChildInvocation({ agent: agent([]), ...invocationOptions });
     expect(invocation.args).toContain("--no-tools");
     expect(invocation.args).not.toContain("--tools");
+  });
+
+  it("keeps the master-visible prompt and tools while enforcing a narrower fork subset through environment policy", () => {
+    const forked: ResolvedAgent = {
+      ...agent(["read", "grep"]),
+      contextMode: "fork",
+      resolvedContextMode: "fork",
+      visibleTools: ["read", "grep", "write", "dede_delegate"],
+      inheritedSystemPrompt: "exact master system",
+      cacheAffinityKey: "parent-cache-key",
+      forkedFrom: { sessionId: "parent-cache-key", entryId: "abc12345", contextTokens: 9000 },
+    };
+    const invocation = buildChildInvocation({ agent: forked, ...invocationOptions });
+    const args = invocation.args.join(" ");
+    expect(args).toContain("--system-prompt /tmp/run/scout-system.md");
+    expect(args).not.toContain("--append-system-prompt");
+    expect(args).toContain("--tools read,grep,write,dede_delegate");
+    expect(invocation.env.PI_DEDE_ALLOWED_TOOLS).toBe('["read","grep"]');
+    expect(invocation.env.PI_DEDE_CACHE_AFFINITY_KEY).toBe("parent-cache-key");
+    expect(invocation.env.PI_DEDE_CONTEXT_MODE).toBe("fork");
   });
 });

@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import dedeExtension from "../src/index.ts";
 import { ArtifactManager, ChildProcessManager, runChild } from "../src/runner.ts";
 import type { ResolvedAgent } from "../src/types.ts";
@@ -18,6 +18,8 @@ const agent: ResolvedAgent = {
   id: "scout",
   profile: "scout",
   goal: "inspect",
+  contextMode: "isolated",
+  resolvedContextMode: "isolated",
   toolPreset: "read-only",
   tools: ["read", "grep", "find", "ls"],
   additionalArgs: [],
@@ -46,6 +48,94 @@ process.stdin.on("data", (chunk) => {
 });`;
 
 describe("fake Pi integration", () => {
+  it("forks the safe master prefix, preserves the visible tool surface, and sends bounded runtime policy", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-master-context-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
+    const fake = join(directory, "fake-pi.mjs");
+    const logPath = join(directory, "fork.json");
+    await writeFile(fake, `
+      import { readFileSync, writeFileSync } from "node:fs";
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type !== "prompt") return;
+        const value = (flag) => process.argv[process.argv.indexOf(flag) + 1];
+        writeFileSync(process.env.DEDE_TEST_LOG, JSON.stringify({
+          session: readFileSync(value("--session"), "utf8"),
+          system: readFileSync(value("--system-prompt"), "utf8"),
+          tools: value("--tools"),
+          allowed: process.env.PI_DEDE_ALLOWED_TOOLS,
+          affinity: process.env.PI_DEDE_CACHE_AFFINITY_KEY,
+          task: cmd.message
+        }));
+        __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        const usage = { input: 100, output: 1, cacheRead: 900, cacheWrite: 0, totalTokens: 1001,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+        __send({ type: "message_end", message: {
+          role: "assistant", content: [{ type: "text", text: "## Answer\\n- forked" }], provider: "fake", model: "model",
+          responseId: "fork", timestamp: Date.now(), stopReason: "stop", usage
+        }});
+        __send({ type: "agent_end" });
+        __send({ type: "agent_settled" });
+      }
+    `);
+
+    const master = SessionManager.create(directory, join(directory, "sessions"));
+    const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+    master.appendMessage({ role: "user", content: "Inherited sentinel fact", timestamp: Date.now() });
+    master.appendMessage({ role: "assistant", content: [{ type: "text", text: "retained" }], api: "openai-responses", provider: "fake", model: "model", usage, stopReason: "stop", timestamp: Date.now() });
+    master.appendMessage({ role: "user", content: "Run the delegation", timestamp: Date.now() });
+    master.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "fork-call", name: "dede_delegate", arguments: {} }], api: "openai-responses", provider: "fake", model: "model", usage, stopReason: "toolUse", timestamp: Date.now() });
+
+    process.argv[1] = fake;
+    process.env.DEDE_TEST_LOG = logPath;
+    let tool: any;
+    let shutdown: any;
+    dedeExtension({
+      registerTool(value: any) { tool = value; },
+      getActiveTools() { return ["read", "grep", "find", "ls", "write", "dede_delegate"]; },
+      on(event: string, handler: any) { if (event === "session_shutdown") shutdown = handler; },
+    } as unknown as ExtensionAPI);
+    const ctx = {
+      cwd: directory,
+      model: { provider: "fake", id: "model" },
+      modelRegistry: {
+        getAll: () => [{ provider: "fake", id: "model" }],
+        getRegisteredProviderIds: () => [],
+      },
+      sessionManager: master,
+      getSystemPrompt: () => "EXACT MASTER SYSTEM",
+      getContextUsage: () => ({ tokens: 8000, contextWindow: 20000, percent: 40 }),
+      isProjectTrusted: () => false,
+      ui: { setStatus: () => undefined },
+    };
+
+    try {
+      const result = await tool.execute("fork-call", {
+        objective: "Use established context",
+        agents: [{ id: "forked", profile: "scout", goal: "Return the inherited fact", contextMode: "auto", model: "fake/model" }],
+      }, undefined, undefined, ctx);
+      const child = result.details.results[0];
+      expect(child.contextFallbackReason, JSON.stringify(child)).toBeUndefined();
+      expect(child).toMatchObject({ contextModeRequested: "auto", contextModeResolved: "fork", cacheHitRatio: 0.9 });
+      expect(child.timeToFirstEventMs).toEqual(expect.any(Number));
+      const logged = JSON.parse(await readFile(logPath, "utf8"));
+      expect(logged.session).toContain("Inherited sentinel fact");
+      expect(logged.session).not.toContain("fork-call");
+      expect(logged.system).toBe("EXACT MASTER SYSTEM");
+      expect(logged.tools).toBe("read,grep,find,ls,write,dede_delegate");
+      expect(JSON.parse(logged.allowed)).toEqual(["read", "grep", "find", "ls"]);
+      expect(logged.affinity).toBe(master.getSessionId());
+      expect(logged.task).toContain("Only use tools from this allowed set: read, grep, find, ls");
+    } finally {
+      await shutdown?.({}, ctx);
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("runs independent evidence agents in parallel without forwarding sibling output", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-parallel-"));
     const fake = join(directory, "fake-pi.mjs");

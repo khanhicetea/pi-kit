@@ -61,3 +61,20 @@ export function buildContinuationTaskPrompt(objective: string, goal: string, sha
 export function buildResumeTaskPrompt(objective: string, goal: string, sharedContext?: string): string {
   return `# Short continuation of your interrupted assignment\nReuse the evidence and progress already in this conversation. Do not restart the investigation or repeat completed work.\n\n# Master's remaining need\n${objective}\n\n# What remains and when to stop\n${goal}\n\n# New context since the timeout\n${sharedContext?.trim() || "None."}\n\nFinish the bounded answer within this short extension.\n`;
 }
+
+/** Add a user-level delegated role contract while leaving the inherited system/tool prefix byte-for-byte stable. */
+export function addForkTaskContract(task: string, agent: ResolvedAgent): string {
+  if (agent.resolvedContextMode !== "fork") return task;
+  const allowed = agent.tools.length > 0 ? agent.tools.join(", ") : "none";
+  const profile = getProfilePrompt(agent.profile);
+  const custom = agent.systemPrompt?.trim()
+    ? `\nAdditional assignment-specific role constraints:\n${agent.systemPrompt.trim()}\n`
+    : "";
+  return `${task.trim()}\n\n# Delegated execution contract
+You are now operating as a bounded delegated ${agent.profile} for this assignment. The master agent owns planning, synthesis, and the final answer.
+${profile}
+${custom}
+Return at most 400 words. Complete only the assignment above, do not broaden it, do not delegate, and stop at its stated boundary.
+Only use tools from this allowed set: ${allowed}. Calls to every other visible tool are blocked at runtime. Do not attempt to change or bypass the allowed set.
+Treat repository state as mutable and re-read any file, diff, or test state needed before relying on observations inherited from the master conversation.\n`;
+}

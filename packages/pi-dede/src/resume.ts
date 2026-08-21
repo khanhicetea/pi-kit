@@ -23,6 +23,8 @@ function cloneAgent(agent: ResolvedAgent): ResolvedAgent {
   return {
     ...agent,
     tools: [...agent.tools],
+    visibleTools: agent.visibleTools ? [...agent.visibleTools] : undefined,
+    forkedFrom: agent.forkedFrom ? { ...agent.forkedFrom } : undefined,
     env: { ...agent.env },
     continueFrom: agent.continueFrom ? { ...agent.continueFrom } : undefined,
     resume: agent.resume ? { ...agent.resume } : undefined,
@@ -75,7 +77,6 @@ export class ChildResumeStore {
   async allocate(agent: ResolvedAgent, cwd: string): Promise<ChildLineageLease> {
     if (this.closed) throw new Error("Child lineage store is shut down");
     this.pruneContinuations();
-    const handle = `dede_${randomUUID()}`;
     const sessionId = randomUUID();
     const manager = SessionManager.create(cwd, process.env.PI_CODING_AGENT_SESSION_DIR, { id: sessionId });
     const directory = manager.getSessionDir();
@@ -83,6 +84,23 @@ export class ChildResumeStore {
     if (!sessionPath) throw new Error("Could not create child session file");
     await writeFile(sessionPath, `${JSON.stringify(manager.getHeader())}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
     await chmod(sessionPath, 0o600);
+    return this.store(agent, sessionId, directory, sessionPath);
+  }
+
+  /** Allocate a child session containing the selected active path from the master session. */
+  async allocateFork(agent: ResolvedAgent, sourceSessionPath: string, forkEntryId: string, cwd: string): Promise<ChildLineageLease> {
+    if (this.closed) throw new Error("Child lineage store is shut down");
+    this.pruneContinuations();
+    const source = SessionManager.open(sourceSessionPath, process.env.PI_CODING_AGENT_SESSION_DIR, cwd);
+    const sessionPath = source.createBranchedSession(forkEntryId);
+    if (!sessionPath) throw new Error("Could not create forked child session file");
+    await chmod(sessionPath, 0o600);
+    const manager = SessionManager.open(sessionPath, process.env.PI_CODING_AGENT_SESSION_DIR, cwd);
+    return this.store(agent, manager.getSessionId(), manager.getSessionDir(), sessionPath);
+  }
+
+  private store(agent: ResolvedAgent, sessionId: string, directory: string, sessionPath: string): ChildLineageLease {
+    const handle = `dede_${randomUUID()}`;
     const record: StoredLineage = {
       handle,
       sessionId,

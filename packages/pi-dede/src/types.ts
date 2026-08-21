@@ -4,11 +4,14 @@ export const BUILTIN_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "wri
 export const PROFILES = ["scout", "reviewer", "worker", "custom"] as const;
 export const TOOL_PRESETS = ["read-only", "coding", "none", "custom"] as const;
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export const CONTEXT_MODES = ["auto", "fork", "isolated"] as const;
 
 export type BuiltinTool = (typeof BUILTIN_TOOLS)[number];
 export type DedeProfile = (typeof PROFILES)[number];
 export type ToolPreset = (typeof TOOL_PRESETS)[number];
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+export type ContextMode = (typeof CONTEXT_MODES)[number];
+export type ResolvedContextMode = Exclude<ContextMode, "auto">;
 export type ChildStatus = "queued" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled";
 
 export interface ProfileDefault {
@@ -24,6 +27,8 @@ export interface DedeAgentRequest {
   id: string;
   profile?: DedeProfile;
   goal: string;
+  /** Reuse a safe master-conversation prefix, remain isolated, or let pi-dede decide. */
+  contextMode?: ContextMode;
   /** Continue a successfully finished related child lineage with a new bounded task. */
   continueFrom?: string;
   /** Finish the remaining work of a timed-out child with a short extension. */
@@ -61,6 +66,20 @@ export interface ResolvedAgent {
   id: string;
   profile: DedeProfile;
   goal: string;
+  contextMode: ContextMode;
+  resolvedContextMode: ResolvedContextMode;
+  contextFallbackReason?: string;
+  /** Exact master-visible tools retained in fork mode for prompt-cache fidelity. */
+  visibleTools?: string[];
+  /** Exact effective master system prompt retained in fork mode. */
+  inheritedSystemPrompt?: string;
+  /** Provider cache-affinity key retained across a forked child lineage. */
+  cacheAffinityKey?: string;
+  forkedFrom?: {
+    sessionId: string;
+    entryId: string;
+    contextTokens?: number;
+  };
   continueFrom?: ContinuationReference;
   resume?: ResumeReference;
   systemPrompt?: string;
@@ -93,6 +112,16 @@ export interface DedeChildResult {
   id: string;
   profile: DedeProfile;
   goal: string;
+  contextModeRequested?: ContextMode;
+  contextModeResolved?: ResolvedContextMode;
+  contextFallbackReason?: string;
+  forkedFrom?: {
+    sessionId: string;
+    entryId: string;
+    contextTokens?: number;
+  };
+  cacheHitRatio?: number;
+  timeToFirstEventMs?: number;
   status: ChildStatus;
   model: string;
   thinking: ThinkingLevel;

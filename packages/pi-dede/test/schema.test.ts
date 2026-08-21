@@ -57,6 +57,10 @@ describe("public schema", () => {
       ...input,
       agents: [{ id: "a", goal: "x", env: { CHILD_MODE: 1 } }],
     })).toBe(false);
+    expect(Check(DedeDelegateSchema, {
+      ...input,
+      agents: [{ id: "a", goal: "x", contextMode: "fork" }],
+    })).toBe(true);
   });
 });
 
@@ -71,7 +75,26 @@ describe("semantic validation", () => {
       thinking: "low",
       timeoutSeconds: DEFAULT_CHILD_TIMEOUT_SECONDS,
       mutationCapable: false,
+      contextMode: "auto",
+      resolvedContextMode: "isolated",
     });
+  });
+
+  it("preserves context mode across a lineage and rejects continuation overrides", () => {
+    const source = validateAndResolve(valid({
+      agents: [{ id: "a", goal: "x", contextMode: "fork" }],
+    }), context)[0];
+    const lineageContext: ValidationContext = {
+      ...context,
+      continuationLookup: () => ({ handle: "dede_handle", sessionId: "session", attempt: 0, continuationIndex: 0, agent: source }),
+    };
+    expect(() => validateAndResolve(valid({
+      agents: [{ id: "next", goal: "continue", continueFrom: "dede_handle", contextMode: "isolated" }],
+    }), lineageContext)).toThrow(/cannot override contextMode/);
+    const [continued] = validateAndResolve(valid({
+      agents: [{ id: "next", goal: "continue", continueFrom: "dede_handle" }],
+    }), lineageContext);
+    expect(continued.contextMode).toBe("fork");
   });
 
   it("resolves profile capabilities and thinking defaults", () => {
@@ -96,13 +119,16 @@ describe("semantic validation", () => {
       },
     };
 
-    const [configured] = validateAndResolve(valid({ agents: [{ id: "a", profile: "scout", goal: "x" }] }), defaults);
+    const [configured] = validateAndResolve(valid({ agents: [{ id: "a", profile: "scout", goal: "x", contextMode: "isolated" }] }), defaults);
     expect(configured).toMatchObject({
       model: "other/small",
       thinking: "minimal",
       env: { CONFIG_ONLY: "yes", SHARED: "config" },
       additionalArgs: ["-e", "/scout/ext.ts"],
     });
+
+    const [cacheFirst] = validateAndResolve(valid({ agents: [{ id: "a", profile: "scout", goal: "x" }] }), defaults);
+    expect(cacheFirst).toMatchObject({ model: "test/main", contextMode: "auto" });
 
     const [shared] = validateAndResolve(valid({ agents: [{ id: "a", profile: "custom", goal: "x" }] }), defaults);
     expect(shared.additionalArgs).toEqual(["--shared-child-arg"]);

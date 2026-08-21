@@ -64,7 +64,8 @@ export function renderDedeCall(args: DedeDelegateParams, theme: any, context: an
       : agent.continueFrom
         ? ` · continue ${preview(agent.continueFrom, 18)}`
         : "";
-    text += `\n  ${theme.fg("accent", agent.id)} ${theme.fg("muted", `· ${profile} · ${preset} · ${timeout}s${lineage}`)}`;
+    const contextMode = reusing ? "" : ` · ${agent.contextMode ?? "auto context"}`;
+    text += `\n  ${theme.fg("accent", agent.id)} ${theme.fg("muted", `· ${profile} · ${preset} · ${timeout}s${contextMode}${lineage}`)}`;
     text += `\n    ${theme.fg("dim", preview(agent.goal, 110))}`;
   }
   component.setText(text);
@@ -109,7 +110,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     for (const child of details.results) {
       const latest = child.activity.at(-1)?.text ?? child.status;
       const lineage = child.resumedFrom ? "resumed · " : child.continuedFrom ? `continued #${child.continuationIndex ?? 0} · ` : "";
-      const runtime = `${lineage}${child.profile} · ${child.model} · ${child.thinking} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s`;
+      const runtime = `${lineage}${child.profile} · ${child.model} · ${child.thinking} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s · ${child.contextModeResolved ?? "isolated"}`;
       text += `\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", `· ${runtime}`)}`;
       text += `\n    ${theme.fg("dim", preview(latest, 120))}`;
     }
@@ -123,7 +124,9 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     let text = `${aggregateIcon(details.status, theme)} ${theme.fg("toolTitle", theme.bold("Đệ Đệ  "))}${theme.fg("accent", aggregate)}${theme.fg("dim", ` · ${tokens(totalTokens)} tok · ${seconds(details.durationMs)}`)}`;
     for (const child of details.results) {
       const first = child.finalText.split("\n").filter((line) => line.trim() && !line.trim().startsWith("#")).slice(0, 2).join(" ");
-      const stats = `${child.profile} · ${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tok${child.usage.cost ? ` · $${child.usage.cost.toFixed(4)}` : ""} · ${seconds(child.durationMs)}`;
+      const cache = child.cacheHitRatio ? ` · ${(child.cacheHitRatio * 100).toFixed(0)}% cache` : "";
+      const firstEvent = child.timeToFirstEventMs !== undefined ? ` · first event ${seconds(child.timeToFirstEventMs)}` : "";
+      const stats = `${child.profile} · ${child.contextModeResolved ?? "isolated"} · ${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tok${cache}${child.usage.cost ? ` · $${child.usage.cost.toFixed(4)}` : ""}${firstEvent} · ${seconds(child.durationMs)}`;
       text += `\n\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", `· ${child.status} · ${stats}`)}`;
       text += `\n    ${theme.fg("toolOutput", preview(first || child.errorMessage || "(no output)", 100))}`;
       if (child.sessionId) text += `\n    ${theme.fg("dim", `session ${child.sessionId} · pi --session ${child.sessionId}`)}`;
@@ -146,6 +149,10 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     container.addChild(new Text(`${icon(child.status, theme)} ${theme.fg("accent", theme.bold(child.id))} ${theme.fg("muted", `${child.status} · ${child.profile} · ${child.model} · ${child.thinking}`)}`, 0, 0));
     container.addChild(new Text(theme.fg("muted", "Assignment: ") + theme.fg("dim", child.goal), 0, 0));
     container.addChild(new Text(theme.fg("muted", "Budget: ") + theme.fg("dim", `${child.timeoutSeconds}s · ${child.tools.join(", ") || "no tools"}`), 0, 0));
+    const contextDetail = child.contextModeResolved === "fork" && child.forkedFrom
+      ? `fork · parent ${child.forkedFrom.sessionId} · entry ${child.forkedFrom.entryId}${child.forkedFrom.contextTokens !== undefined ? ` · ${tokens(child.forkedFrom.contextTokens)} inherited tokens` : ""}`
+      : `isolated${child.contextFallbackReason ? ` · ${child.contextFallbackReason}` : ""}`;
+    container.addChild(new Text(theme.fg("muted", "Context: ") + theme.fg("dim", contextDetail), 0, 0));
     if (child.sessionId) container.addChild(new Text(theme.fg("muted", "Session: ") + theme.fg("dim", `${child.sessionId} · inspect with pi --session ${child.sessionId}`), 0, 0));
     if (child.activity.length) container.addChild(new Text(theme.fg("dim", activityPreview(child.activity)), 0, 0));
     if (child.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${child.errorMessage}`), 0, 0));
@@ -156,7 +163,8 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
       container.addChild(new Markdown(child.finalText, 0, 0, getMarkdownTheme()));
     }
     if (child.artifactPath) container.addChild(new Text(theme.fg("dim", `Full output: ${child.artifactPath}`), 0, 0));
-    container.addChild(new Text(theme.fg("dim", `${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tokens · $${child.usage.cost.toFixed(4)} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s`), 0, 0));
+    const firstEvent = child.timeToFirstEventMs !== undefined ? ` · first event ${seconds(child.timeToFirstEventMs)}` : "";
+    container.addChild(new Text(theme.fg("dim", `${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tokens · $${child.usage.cost.toFixed(4)}${firstEvent} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s`), 0, 0));
   }
   return container;
 }

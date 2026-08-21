@@ -8,6 +8,8 @@ const agent: ResolvedAgent = {
   id: "scout",
   profile: "scout",
   goal: "answer the bounded question",
+  contextMode: "isolated",
+  resolvedContextMode: "isolated",
   toolPreset: "read-only",
   tools: ["read", "grep"],
   additionalArgs: [],

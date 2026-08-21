@@ -5,7 +5,7 @@ A monorepo containing reusable [Pi](https://pi.dev) extension packages.
 ## Packages
 
 - [`pi-multi-codex`](./packages/pi-multi-codex) — multiple OpenAI Codex account slots
-- [`pi-dede`](./packages/pi-dede) — isolated Pi sub-agent delegation with a parent orchestration skill
+- [`pi-dede`](./packages/pi-dede) — context-aware Pi sub-agent delegation with safe master forks and a parent orchestration skill
 - [`pi-wui`](./packages/pi-wui) — browser-based Web UI portal and MCP server
 - [`web-access-kit`](./packages/web-access-kit) — webpage reading and Google Search tools
 

@@ -75,10 +75,12 @@ describe("profile default configuration", () => {
     await expect(loadDedeConfig(cwd, true)).resolves.toEqual({
       profiles: {},
       additionalArgs: ["-e", "/project/ext.ts"],
+      context: { forkMinTokens: 4000, forkMaxContextRatio: 0.7 },
     });
     await expect(loadDedeConfig(cwd, false)).resolves.toEqual({
       profiles: {},
       additionalArgs: ["-e", "/global/ext.ts"],
+      context: { forkMinTokens: 4000, forkMaxContextRatio: 0.7 },
     });
   });
 
@@ -98,6 +100,19 @@ describe("profile default configuration", () => {
         reviewer: { additionalArgs: [] },
       },
       additionalArgs: ["--global-arg"],
+      context: { forkMinTokens: 4000, forkMaxContextRatio: 0.7 },
+    });
+  });
+
+  it("merges context economics with trusted project overrides", async () => {
+    const { cwd, globalPath, projectPath } = await setup();
+    await writeFile(globalPath, JSON.stringify({ context: { forkMinTokens: 2000, forkMaxContextRatio: 0.6 } }));
+    await writeFile(projectPath, JSON.stringify({ context: { forkMinTokens: 8000 } }));
+    await expect(loadDedeConfig(cwd, true)).resolves.toMatchObject({
+      context: { forkMinTokens: 8000, forkMaxContextRatio: 0.6 },
+    });
+    await expect(loadDedeConfig(cwd, false)).resolves.toMatchObject({
+      context: { forkMinTokens: 2000, forkMaxContextRatio: 0.6 },
     });
   });
 
