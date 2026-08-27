@@ -1,0 +1,11 @@
+#!/usr/bin/env node
+
+import { register } from "tsx/esm/api";
+
+register();
+const { main } = await import("../server.ts");
+
+main().catch((error) => {
+	console.error(`[web-access-kit] ${error instanceof Error ? error.message : String(error)}`);
+	process.exitCode = 1;
+});

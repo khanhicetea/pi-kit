@@ -1,17 +1,12 @@
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
-import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
-	formatSize,
-	truncateHead,
-	type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { execWithRetry, runPublicCurl, validatePublicHttpUrl } from "./public-http.ts";
 
+const DEFAULT_MAX_BYTES = 50 * 1024;
+const DEFAULT_MAX_LINES = 2_000;
 const FETCH_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_FETCH_TIMEOUT_SECONDS = 30;
 const DEFAULT_SEARCH_TIMEOUT_SECONDS = 180;
@@ -29,6 +24,116 @@ const CHROME_MAC_USER_AGENT =
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 
 const AGY_TRANSIENT_ERROR = /rate|quota|timeout|overload|temporary|temporarily|\b429\b|\b503\b|connection|reset|unavailable/i;
+
+function formatSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes}B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function truncateHead(content: string, limits: { maxBytes: number; maxLines: number }): {
+	content: string;
+	truncated: boolean;
+	outputLines: number;
+	totalLines: number;
+	outputBytes: number;
+	totalBytes: number;
+} {
+	const totalBytes = Buffer.byteLength(content, "utf8");
+	const lines = content.length === 0 ? [] : content.replace(/\n$/, "").split("\n");
+	if (lines.length <= limits.maxLines && totalBytes <= limits.maxBytes) {
+		return { content, truncated: false, outputLines: lines.length, totalLines: lines.length, outputBytes: totalBytes, totalBytes };
+	}
+
+	const output: string[] = [];
+	let outputBytes = 0;
+	for (let index = 0; index < lines.length && index < limits.maxLines; index++) {
+		const bytes = Buffer.byteLength(lines[index], "utf8") + (index > 0 ? 1 : 0);
+		if (outputBytes + bytes > limits.maxBytes) break;
+		output.push(lines[index]);
+		outputBytes += bytes;
+	}
+	const truncated = output.join("\n");
+	return {
+		content: truncated,
+		truncated: true,
+		outputLines: output.length,
+		totalLines: lines.length,
+		outputBytes: Buffer.byteLength(truncated, "utf8"),
+		totalBytes,
+	};
+}
+
+function stringEnum<T extends readonly string[]>(values: T, options: { description: string }) {
+	return Type.Union(values.map((value) => Type.Literal(value)), options);
+}
+
+export interface WebAccessKitOptions {
+	/** Base URL of a web-access-kit direct API, or false to force local execution. */
+	remoteBaseUrl?: string | false;
+}
+
+function configuredRemoteBaseUrl(option: WebAccessKitOptions["remoteBaseUrl"]): string | undefined {
+	const value = option === undefined ? process.env.WEB_ACCESS_KIT_URL : option;
+	if (value === false || !value?.trim()) return undefined;
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		throw new Error("WEB_ACCESS_KIT_URL must be an absolute HTTP or HTTPS URL, such as https://tools.example.com/web-access-kit");
+	}
+	if (url.protocol !== "http:" && url.protocol !== "https:") {
+		throw new Error("WEB_ACCESS_KIT_URL must use HTTP or HTTPS");
+	}
+	if (url.username || url.password || url.search || url.hash) {
+		throw new Error("WEB_ACCESS_KIT_URL cannot contain credentials, a query string, or a fragment");
+	}
+	url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+	return url.toString().replace(/\/$/, "");
+}
+
+async function executeRemoteTool(
+	baseUrl: string,
+	name: "web_fetch_page" | "web_search",
+	params: object,
+	signal?: AbortSignal,
+): Promise<{ content: Array<{ type: "text"; text: string }>; details?: Record<string, unknown> }> {
+	const endpoint = new URL(`${baseUrl.replace(/\/+$/, "")}/tools/${name}`);
+	const token = process.env.WEB_ACCESS_KIT_TOKEN?.trim();
+	let response: Response;
+	try {
+		response = await fetch(endpoint, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				...(token ? { authorization: `Bearer ${token}` } : {}),
+			},
+			body: JSON.stringify(params),
+			signal,
+		});
+	} catch (error) {
+		throw new Error(`remote ${name} request failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
+
+	const body = await response.text();
+	let payload: unknown;
+	try {
+		payload = JSON.parse(body);
+	} catch {
+		throw new Error(`remote ${name} returned invalid JSON (HTTP ${response.status})`);
+	}
+	if (!response.ok) {
+		const message =
+			payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
+				? payload.error
+				: `HTTP ${response.status}`;
+		throw new Error(`remote ${name} failed: ${message}`);
+	}
+	if (!payload || typeof payload !== "object" || !Array.isArray(payload.content)) {
+		throw new Error(`remote ${name} returned an invalid tool result`);
+	}
+	return payload as { content: Array<{ type: "text"; text: string }>; details?: Record<string, unknown> };
+}
 
 // Truncation artifacts (full output / search output) are returned to the caller
 // via details.fullOutputPath. Track them so accumulation is bounded within a
@@ -102,7 +207,7 @@ async function sweepStaleTempDirs(): Promise<void> {
 const WebFetchParams = Type.Object({
 	url: Type.String({ description: "HTTP or HTTPS webpage URL" }),
 	method: Type.Optional(
-		StringEnum(["GET", "HEAD"] as const, {
+		stringEnum(["GET", "HEAD"] as const, {
 			description: "HTTP method (default: GET; HEAD for metadata only)",
 		}),
 	),
@@ -132,7 +237,7 @@ const WebSearchParams = Type.Object({
 		}),
 	),
 	recency: Type.Optional(
-		StringEnum(["any", "day", "week", "month", "year"] as const, {
+		stringEnum(["any", "day", "week", "month", "year"] as const, {
 			description: "Prefer results from this time range (default: any)",
 		}),
 	),
@@ -382,7 +487,8 @@ async function resolveGroundingRedirects(
 	return { output: resolvedOutput, resolved, unresolved };
 }
 
-export default function webAccessKit(pi: ExtensionAPI) {
+export default function webAccessKit(pi: ExtensionAPI, options: WebAccessKitOptions = {}) {
+	const remoteBaseUrl = configuredRemoteBaseUrl(options.remoteBaseUrl);
 	sweepStaleTempDirs().catch(() => undefined);
 	pi.on("session_shutdown", () => {
 		for (const directory of trackedTempDirs) rm(directory, { recursive: true, force: true }).catch(() => undefined);
@@ -408,6 +514,7 @@ export default function webAccessKit(pi: ExtensionAPI) {
 		],
 		parameters: WebFetchParams,
 		async execute(_toolCallId, params, signal) {
+			if (remoteBaseUrl) return executeRemoteTool(remoteBaseUrl, "web_fetch_page", params, signal);
 			const url = validatePublicHttpUrl(params.url);
 			const method = params.method ?? "GET";
 			const timeoutSeconds = params.timeout_seconds ?? fetchTimeout();
@@ -534,6 +641,7 @@ export default function webAccessKit(pi: ExtensionAPI) {
 		],
 		parameters: WebSearchParams,
 		async execute(_toolCallId, params, signal, onUpdate) {
+			if (remoteBaseUrl) return executeRemoteTool(remoteBaseUrl, "web_search", params, signal);
 			const startedAt = Date.now();
 			const timeoutSeconds = params.timeout_seconds ?? searchTimeout();
 			onUpdate?.({

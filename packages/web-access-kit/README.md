@@ -70,6 +70,76 @@ pi -e ./web-access-kit --tools web_search,web_fetch_page -p \
   "Find today's official Node.js release information and cite sources"
 ```
 
+## Remote MCP server
+
+The package also ships a Streamable HTTP MCP server, so any MCP-compatible remote agent can call the same `web_search` and `web_fetch_page` tools:
+
+```bash
+HOST=127.0.0.1 PORT=3000 PREFIX=/web-access-kit \
+  npx --package=@khanhicetea/web-access-kit web-access-kit-server
+```
+
+Its MCP endpoint is `http://127.0.0.1:3000/web-access-kit/mcp`; health is available at `/web-access-kit/health`. Configure a remote MCP client with that public endpoint and, when configured, an `Authorization: Bearer <token>` header. For example:
+
+```json
+{
+  "mcpServers": {
+    "web-access-kit": {
+      "url": "https://tools.example.com/web-access-kit/mcp",
+      "headers": {
+        "Authorization": "Bearer replace-with-a-long-random-token"
+      }
+    }
+  }
+}
+```
+
+Server environment variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `HOST` | `127.0.0.1` | Interface to bind. Set `0.0.0.0` only behind a trusted network boundary. |
+| `PORT` | `3000` | TCP port to listen on. |
+| `PREFIX` | `/web-access-kit` | URL path prefix; the MCP endpoint is `${PREFIX}/mcp`. |
+| `WEB_ACCESS_KIT_TOKEN` | unset | Optional bearer token required for MCP and direct API requests. Pi also sends it when using a remote `WEB_ACCESS_KIT_URL`. Set this for every non-local deployment. |
+| `WEB_ACCESS_KIT_URL` | unset | Pi-extension client only: public base URL (including `PREFIX`) for direct tool calls; unset to use local tools. |
+
+The server runs `agy update` every 24 hours. It does not run an update on startup, so it can begin serving immediately.
+
+### Direct HTTP API
+
+Non-MCP clients can call either tool directly with JSON. `WEB_ACCESS_KIT_URL` is the full public base URL including the prefix (for example, `https://tools.example.com/web-access-kit`):
+
+```bash
+export WEB_ACCESS_KIT_URL="http://127.0.0.1:3000/web-access-kit"
+
+curl -sS -X POST "$WEB_ACCESS_KIT_URL/tools/web_search" \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer test-token' \
+  --data '{"query":"latest Node.js release","max_results":3}'
+```
+
+- `POST ${PREFIX}/tools/web_search` accepts the same fields as the `web_search` MCP tool.
+- `POST ${PREFIX}/tools/web_fetch_page` accepts the same fields as `web_fetch_page` (for example, `{"url":"https://example.com"}`).
+- A successful response is the normal tool result with `content` and `details`; errors are JSON as `{ "error": "…" }`.
+
+When Pi loads this package and `WEB_ACCESS_KIT_URL` is set, its extension sends both tool calls to those direct endpoints, forwarding `WEB_ACCESS_KIT_TOKEN` as a bearer token when set. Without the URL, it falls back to local `curl` and `agy` execution. The HTTP server always executes tools locally, preventing a proxy loop.
+
+> **Security:** `web_search` uses the authenticated `agy` account on the server. Never publish this endpoint without `WEB_ACCESS_KIT_TOKEN` and transport-layer HTTPS; otherwise anyone able to reach it can consume that account and fetch public webpages through the server.
+
+### Docker
+
+Build from this package directory:
+
+```bash
+docker build -t web-access-kit .
+docker run --rm -p 3000:3000 \
+  -e WEB_ACCESS_KIT_TOKEN="$(openssl rand -hex 32)" \
+  web-access-kit
+```
+
+The image installs `agy` at `/root/.local/bin/agy`. Complete its initial interactive authentication/setup in the container before sending search requests (for example, start the container and run `docker exec -it <container> agy`). Persist the corresponding agy configuration with a Docker volume if the container will be recreated.
+
 ## Configuration
 
 All knobs are optional environment variables and default to the current values:
