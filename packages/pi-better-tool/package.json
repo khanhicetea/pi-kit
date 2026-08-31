@@ -1,0 +1,44 @@
+{
+	"name": "@khanhicetea/pi-better-tool",
+	"version": "0.2.0",
+	"description": "Better built-in tools for pi: an edit tool override that returns recovery context (closest match + disambiguation snippets) instead of bare failures",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/khanhicetea/pi-kit.git",
+		"directory": "packages/pi-better-tool"
+	},
+	"homepage": "https://github.com/khanhicetea/pi-kit/tree/main/packages/pi-better-tool",
+	"bugs": {
+		"url": "https://github.com/khanhicetea/pi-kit/issues"
+	},
+	"keywords": ["pi-package", "pi-extension", "edit", "tools"],
+	"files": ["src", "README.md", "LICENSE"],
+	"scripts": {
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit",
+		"check": "npm run typecheck && npm test",
+		"prepublishOnly": "npm run check"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@earendil-works/pi-coding-agent": "0.82.1",
+		"@types/node": "^24.0.0",
+		"typebox": "^1.0.0",
+		"typescript": "^5.9.0",
+		"vitest": "^3.2.0"
+	},
+	"pi": {
+		"extensions": ["./src/index.ts"]
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}
