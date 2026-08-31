@@ -7,8 +7,9 @@
  * not find edits[1]" error that forces the model to re-read the file and
  * guess at larger context, failures include recovery context:
  *
- * - ambiguous oldText → occurrence line numbers + the minimal prefix/suffix
- *   context that disambiguates each occurrence, as copy-paste-ready snippets
+ * - ambiguous literal oldText → if the latest verified read of the file shows
+ *   exactly one occurrence, select it and report up to four retryable remaining
+ *   candidates; otherwise return occurrence line numbers + minimal context
  * - not-found oldText → closest matching region with a per-line comparison
  *   and the exact file bytes to retry with
  */
@@ -22,14 +23,27 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { constants } from "node:fs";
-import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
+import { access as fsAccess, readFile as fsReadFile, realpath as fsRealpath, writeFile as fsWriteFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Static, Type } from "typebox";
-import { analyzeEdits, applyAnalysis, type EditOp } from "./apply.ts";
-import { formatEditFailure } from "./diagnostics.ts";
-import { detectLineEnding, normalizeToLF, restoreLineEndings, splitBom } from "./text.ts";
+import { analyzeEdits, applyAnalysis, fuzzyFindText, normalizeEdits, type EditOp } from "./apply.ts";
+import {
+	formatAutoDisambiguationSuccess,
+	formatEditFailure,
+	type AutoDisambiguation,
+} from "./diagnostics.ts";
+import { findLatestReadEvidence } from "./read-evidence.ts";
+import {
+	detectLineEnding,
+	findAllOccurrences,
+	getLineSpans,
+	lineAt,
+	normalizeToLF,
+	restoreLineEndings,
+	splitBom,
+} from "./text.ts";
 
 const replaceEditSchema = Type.Object({
 	oldText: Type.String({
@@ -130,7 +144,7 @@ export interface BetterEditSuccess {
 export async function executeBetterEdit(
 	input: BetterEditInput,
 	signal: AbortSignal | undefined,
-	ctx: Pick<ExtensionContext, "cwd">,
+	ctx: Pick<ExtensionContext, "cwd"> & Partial<Pick<ExtensionContext, "sessionManager">>,
 ): Promise<BetterEditSuccess> {
 	const edits: EditOp[] = input.edits ?? [];
 	if (!Array.isArray(edits) || edits.length === 0) {
@@ -166,7 +180,56 @@ export async function executeBetterEdit(
 		const originalEnding = detectLineEnding(content);
 		const normalizedContent = normalizeToLF(content);
 
-		const result = analyzeEdits(normalizedContent, edits);
+		const selections = new Map<number, number>();
+		const resolutions: AutoDisambiguation[] = [];
+		let result = analyzeEdits(normalizedContent, edits, { ambiguousSelections: selections });
+		let readEvidence: Awaited<ReturnType<typeof findLatestReadEvidence>> | undefined;
+		const normalizedEdits = normalizeEdits(edits);
+		const exactBase = normalizedEdits.every(
+			(edit) => !fuzzyFindText(normalizedContent, edit.oldText).usedFuzzyMatch,
+		);
+
+		while (!result.ok && result.failure.kind === "ambiguous" && exactBase) {
+			const editIndex = result.failure.editIndex;
+			if (selections.has(editIndex)) break;
+			const edit = normalizedEdits[editIndex];
+			const exactOffsets = findAllOccurrences(normalizedContent, edit.oldText);
+			// Fuzzy-equivalent aliases cannot be mapped safely to original offsets.
+			if (exactOffsets.length !== result.failure.occurrenceOffsets.length) break;
+
+			if (readEvidence === undefined) {
+				const canonicalTarget = await fsRealpath(absolutePath);
+				readEvidence = await findLatestReadEvidence(
+					ctx.sessionManager,
+					canonicalTarget,
+					normalizedContent,
+					async (readPath) => fsRealpath(resolveToCwd(readPath, ctx.cwd)),
+				);
+			}
+			if (!readEvidence) break;
+
+			const candidates = exactOffsets.filter(
+				(offset) =>
+					offset >= readEvidence!.startOffset &&
+					offset + edit.oldText.length <= readEvidence!.endOffset,
+			);
+			if (candidates.length !== 1) break;
+
+			const selectedOffset = candidates[0];
+			const spans = getLineSpans(normalizedContent);
+			selections.set(editIndex, selectedOffset);
+			resolutions.push({
+				editIndex,
+				oldText: edit.oldText,
+				chosenRange: {
+					start: lineAt(spans, selectedOffset) + 1,
+					end: lineAt(spans, selectedOffset + Math.max(1, edit.oldText.length) - 1) + 1,
+				},
+				readRange: { start: readEvidence.startLine, end: readEvidence.endLine },
+			});
+			result = analyzeEdits(normalizedContent, edits, { ambiguousSelections: selections });
+		}
+
 		if (!result.ok) {
 			throw new Error(
 				formatEditFailure({
@@ -201,7 +264,11 @@ export async function executeBetterEdit(
 			content: [
 				{
 					type: "text",
-					text: `Successfully replaced ${edits.length} block(s) in ${input.path}.`,
+					text: formatAutoDisambiguationSuccess(
+						`Successfully replaced ${edits.length} block(s) in ${input.path}.`,
+						newContent,
+						resolutions,
+					),
 				},
 			],
 			details: {
@@ -218,7 +285,7 @@ export function registerBetterEditTool(pi: ExtensionAPI): void {
 		name: "edit",
 		label: "edit",
 		description:
-			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes. On failure the error includes recovery context (closest matching region or per-occurrence disambiguation snippets) so you can retry immediately without re-reading the file.",
+			"Edit a single file using exact text replacement. Every edits[].oldText should match a unique, non-overlapping region of the original file. When literal text is repeated, edit may safely select it only if exactly one occurrence was fully shown by the latest verified read of that file; the success result then includes up to four remaining disambiguated candidates. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes. On failure the error includes recovery context (closest matching region or per-occurrence disambiguation snippets) so you can retry immediately without re-reading the file.",
 		promptSnippet:
 			"Make precise file edits with exact text replacement; failures return recovery context (closest match or disambiguation snippets)",
 		promptGuidelines: [
@@ -226,6 +293,7 @@ export function registerBetterEditTool(pi: ExtensionAPI): void {
 			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
 			"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
 			"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+			"When edit safely auto-disambiguates repeated text from the latest verified read, its success message lists up to four remaining occurrences with effective prefix/suffix context for an optional follow-up edit.",
 			"When an edit call fails, the error message already contains recovery context: the closest matching region with exact file bytes (not-found) or each occurrence with a ready-to-use disambiguated oldText (ambiguous match). Retry the edit using that text directly instead of re-reading the file.",
 		],
 		parameters: betterEditSchema,

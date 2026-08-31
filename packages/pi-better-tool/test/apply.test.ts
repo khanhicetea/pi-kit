@@ -56,6 +56,25 @@ describe("analyzeEdits", () => {
 		}
 	});
 
+	it("accepts an explicitly selected literal offset for an ambiguous edit", () => {
+		const file = "one\ntwo\none\n";
+		const result = analyzeEdits(file, [{ oldText: "one", newText: "1" }], {
+			ambiguousSelections: new Map([[0, 8]]),
+		});
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(applyAnalysis(file, result.analysis).newContent).toBe("one\ntwo\n1\n");
+		}
+	});
+
+	it("rejects an explicit ambiguous selection that does not point at literal oldText", () => {
+		const result = analyzeEdits("one\ntwo\none\n", [{ oldText: "one", newText: "1" }], {
+			ambiguousSelections: new Map([[0, 4]]),
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.failure.kind).toBe("ambiguous");
+	});
+
 	it("detects ambiguity in fuzzy space even when the exact text occurs once", () => {
 		// "dup  " (trailing spaces) fuzzy-matches "dup"
 		const file = "dup  \nother\ndup\n";

@@ -10,9 +10,10 @@ The built-in `edit` tool requires `edits[].oldText` to match **exactly and uniqu
 Could not find edits[1] in /code/app.go. The oldText must match exactly including all whitespace and newlines.
 ```
 
-That failure wastes a whole loop: the model has to `read` the file again, guess a larger context, and retry — sometimes failing again. `pi-better-tool` keeps the refusal (writing the wrong occurrence would be worse) but returns **recovery context** so the next call succeeds without re-reading:
+That failure wastes a whole loop: the model has to `read` the file again, guess a larger context, and retry — sometimes failing again. `pi-better-tool` resolves only ambiguity supported by verified evidence and otherwise returns **recovery context** so the next call succeeds without re-reading:
 
-- **Ambiguous match (2+ occurrences)** — bounded occurrence line numbers plus the **minimum prefix/suffix context** that makes the first few occurrences unique, rendered as ready-to-use `oldText` snippets when they fit safely.
+- **Ambiguous literal match after a bounded read** — when exactly one occurrence was fully visible in the latest successful, byte-verified `read` of the same file, edit selects that occurrence. Its success message reports the selected/read ranges and up to four remaining occurrences with effective prefix/suffix context and retryable snippets.
+- **Other ambiguous matches (2+ occurrences)** — bounded occurrence line numbers plus the **minimum prefix/suffix context** that makes the first few occurrences unique, rendered as ready-to-use `oldText` snippets when they fit safely.
 - **Text not found** — the closest matching region (fuzzy line similarity), a line-by-line comparison against your `oldText`, the exact file bytes to retry with, and likely causes (tabs vs spaces, indentation, case).
 
 ## Install
@@ -85,14 +86,15 @@ No changes were written — the file was not modified.
 
 ## Behavior
 
-Happy-path semantics are **identical** to the built-in `edit` tool:
+Normal unique-match semantics are **identical** to the built-in `edit` tool. The one intentional extension is conservative read-based selection for repeated literal text:
 
 - same schema (`path` + `edits[{oldText,newText}]`), including the compatibility shim for models that send `edits` as a JSON string, a single edit object, or legacy top-level `oldText`/`newText`
 - same matching engine ported from pi's `edit-diff.ts`: exact match first, fuzzy fallback (trailing whitespace, smart quotes, dashes, unicode spaces), uniqueness checked in fuzzy-normalized space, all edits matched against the original content, overlap/empty/no-change detection
 - same BOM and CRLF handling
 - same success result shape (`details.diff` / `details.patch` / `details.firstChangedLine`), and no custom renderers — the built-in diff renderer is inherited
+- read-based selection fails closed unless the newest same-file read is still in active context, its stored output exactly matches the current bytes and built-in read formatting, and exactly one complete literal occurrence lies inside the visible range; fuzzy/Unicode-equivalent ambiguity, same-line ambiguity, stale reads, and broad reads containing multiple occurrences still refuse
 
-Failure behavior is the difference: errors carry the recovery context described above, and nothing is written on failure (edits remain atomic).
+Failure behavior is the other difference: errors carry the recovery context described above, and nothing is written on failure (edits remain atomic).
 
 Diagnostics degrade gracefully: files over ~2 MB skip the analysis and return the plain built-in-style error; repeated blocks that cannot be disambiguated within 12 context lines get a guidance note instead of snippets. Complete diagnostic output is bounded below pi's 50 KB / 2,000-line tool-output limit. Oversized exact snippets are omitted with a line range instead of being presented as copyable text, and low-confidence or non-unique closest matches require verification before retrying.
 

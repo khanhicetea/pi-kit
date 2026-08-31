@@ -77,6 +77,14 @@ export interface FuzzyFindResult {
 
 export type AnalyzeResult = { ok: true; analysis: EditAnalysis } | { ok: false; failure: EditFailure };
 
+export interface AnalyzeOptions {
+	/**
+	 * Exact offsets chosen for otherwise-ambiguous edits. Offsets are accepted
+	 * only when they point at the literal oldText in the matching base.
+	 */
+	ambiguousSelections?: ReadonlyMap<number, number>;
+}
+
 export function normalizeEdits(edits: EditOp[]): EditOp[] {
 	return edits.map((edit) => ({
 		oldText: normalizeToLF(edit.oldText),
@@ -124,7 +132,7 @@ function rangeOf(spans: LineSpan[], matchIndex: number, matchLength: number): Li
 	};
 }
 
-export function analyzeEdits(normalizedContent: string, rawEdits: EditOp[]): AnalyzeResult {
+export function analyzeEdits(normalizedContent: string, rawEdits: EditOp[], options: AnalyzeOptions = {}): AnalyzeResult {
 	const edits = normalizeEdits(rawEdits);
 	for (let i = 0; i < edits.length; i++) {
 		// Fuzzy normalization can erase whitespace-only needles. Allowing an
@@ -149,17 +157,31 @@ export function analyzeEdits(normalizedContent: string, rawEdits: EditOp[]): Ana
 			return { ok: false, failure: { kind: "not-found", editIndex: i } };
 		}
 		const occurrences = countFuzzyOccurrences(fuzzyBase, edit.oldText);
+		let selectedMatch = matchResult;
 		if (occurrences > 1) {
 			const occurrenceOffsets = findAllOccurrences(fuzzyBase, normalizeForFuzzyMatch(edit.oldText));
-			return {
-				ok: false,
-			failure: { kind: "ambiguous", editIndex: i, occurrenceOffsets },
+			const selectedOffset = options.ambiguousSelections?.get(i);
+			if (
+				selectedOffset === undefined ||
+				base.slice(selectedOffset, selectedOffset + edit.oldText.length) !== edit.oldText
+			) {
+				return {
+					ok: false,
+					failure: { kind: "ambiguous", editIndex: i, occurrenceOffsets },
+				};
+			}
+			selectedMatch = {
+				found: true,
+				index: selectedOffset,
+				matchLength: edit.oldText.length,
+				usedFuzzyMatch: false,
+				contentForReplacement: base,
 			};
 		}
 		replacements.push({
 			editIndex: i,
-			matchIndex: matchResult.index,
-			matchLength: matchResult.matchLength,
+			matchIndex: selectedMatch.index,
+			matchLength: selectedMatch.matchLength,
 			newText: edit.newText,
 		});
 	}

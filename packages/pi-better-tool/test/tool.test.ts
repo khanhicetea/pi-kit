@@ -26,8 +26,41 @@ async function read(path: string): Promise<string> {
 	return readFile(path, "utf-8");
 }
 
-function run(path: string, edits: Array<{ oldText: string; newText: string }>) {
-	return executeBetterEdit({ path, edits }, undefined, { cwd });
+function run(
+	path: string,
+	edits: Array<{ oldText: string; newText: string }>,
+	sessionManager?: { buildContextEntries(): any[] },
+) {
+	return executeBetterEdit({ path, edits }, undefined, { cwd, sessionManager: sessionManager as never });
+}
+
+function sessionWithRead(
+	path: string,
+	output: string,
+	options: { offset?: number; limit?: number; isError?: boolean } = {},
+) {
+	const toolCallId = "read-call";
+	return {
+		buildContextEntries: () => [
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path, offset: options.offset, limit: options.limit } }],
+				},
+			},
+			{
+				type: "message",
+				message: {
+					role: "toolResult",
+					toolCallId,
+					toolName: "read",
+					content: [{ type: "text", text: output }],
+					isError: options.isError ?? false,
+				},
+			},
+		],
+	};
 }
 
 /** Extract the first fenced snippet from an error message. */
@@ -134,6 +167,51 @@ describe("executeBetterEdit failures", () => {
 			]),
 		).rejects.toThrow(/Could not find edits\[1\]/);
 		expect(await read(path)).toBe("aaa\nbbb\n");
+	});
+});
+
+describe("read-based ambiguity resolution", () => {
+	const body = "func first() {\n\tlog()\n}\n\nfunc second() {\n\tlog()\n}";
+
+	it("edits the only occurrence fully contained in the latest verified read", async () => {
+		const { name, path } = await setup("read-target.go", body);
+		const session = sessionWithRead(name, "func second() {\n\tlog()\n}", { offset: 5, limit: 3 });
+		const result = await run(name, [{ oldText: "\tlog()\n}", newText: "\tchanged()\n}" }], session);
+
+		expect(await read(path)).toBe("func first() {\n\tlog()\n}\n\nfunc second() {\n\tchanged()\n}");
+		expect(result.content[0]?.text).toContain("Auto-disambiguated edits[0] to lines 6-7");
+		expect(result.content[0]?.text).toContain("latest verified read of lines 5-7");
+		expect(result.content[0]?.text).toContain("Remaining exact occurrences");
+		expect(result.content[0]?.text).toContain("effective context:");
+		expect(result.content[0]?.text).toContain("Use one fenced snippet byte-for-byte as oldText");
+	});
+
+	it("shows fewer than five remaining occurrences and reports additional ones as omitted", async () => {
+		const many = Array.from({ length: 6 }, (_, i) => `marker ${i + 1}\ndup`).join("\n");
+		const { name } = await setup("many.txt", many);
+		const session = sessionWithRead(name, "marker 3\ndup\n\n[6 more lines in file. Use offset=7 to continue.]", { offset: 5, limit: 2 });
+		const result = await run(name, [{ oldText: "dup", newText: "changed" }], session);
+		const message = result.content[0]?.text ?? "";
+		expect(message).toContain("4 shown, 1 more omitted");
+		expect(message.match(/effective context:/g)).toHaveLength(4);
+	});
+
+	it("keeps refusing when the latest read contains multiple occurrences", async () => {
+		const { name, path } = await setup("read-all.go", body);
+		const session = sessionWithRead(name, body);
+		await expect(run(name, [{ oldText: "\tlog()\n}", newText: "x" }], session)).rejects.toThrow(
+			/Found 2 occurrences/,
+		);
+		expect(await read(path)).toBe(body);
+	});
+
+	it("keeps refusing when the stored read output no longer matches the file", async () => {
+		const { name, path } = await setup("stale-read.go", body);
+		const session = sessionWithRead(name, "func old() {\n\tlog()\n}", { offset: 5, limit: 3 });
+		await expect(run(name, [{ oldText: "\tlog()\n}", newText: "x" }], session)).rejects.toThrow(
+			/Found 2 occurrences/,
+		);
+		expect(await read(path)).toBe(body);
 	});
 });
 

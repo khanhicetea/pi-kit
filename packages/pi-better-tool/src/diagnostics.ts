@@ -17,9 +17,11 @@ import { normalizeEdits } from "./apply.ts";
 import { findClosestRegion, lineSimilarity, probeMatchCauses } from "./similarity.ts";
 import {
 	countFuzzyOccurrences,
+	findAllOccurrences,
 	getLineSpans,
 	lineAt,
 	normalizeForFuzzyMatch,
+	normalizeToLF,
 	type LineSpan,
 } from "./text.ts";
 
@@ -53,6 +55,13 @@ export interface Expansion {
 	endLine: number;
 }
 
+export interface AutoDisambiguation {
+	editIndex: number;
+	oldText: string;
+	chosenRange: LineRange;
+	readRange: LineRange;
+}
+
 export interface FormatFailureOptions {
 	path: string;
 	/** LF-normalized, BOM-stripped file content. */
@@ -60,6 +69,57 @@ export interface FormatFailureOptions {
 	/** Raw edits as provided by the model. */
 	edits: EditOp[];
 	failure: EditFailure;
+}
+
+const MAX_SUCCESS_RESOLUTIONS = 4;
+const MAX_REMAINING_OCCURRENCES = 4;
+const MAX_SUCCESS_SNIPPET_BYTES = 2_500;
+
+/** Add verified read-based selections and retryable remaining candidates to a successful edit result. */
+export function formatAutoDisambiguationSuccess(
+	baseMessage: string,
+	newContent: string,
+	resolutions: AutoDisambiguation[],
+): string {
+	if (resolutions.length === 0) return baseMessage;
+	const lines = [baseMessage, ""];
+	const shownResolutions = resolutions.slice(0, MAX_SUCCESS_RESOLUTIONS);
+
+	for (const resolution of shownResolutions) {
+		lines.push(
+			`Auto-disambiguated edits[${resolution.editIndex}] to ${describeLines(resolution.chosenRange.start, resolution.chosenRange.end)} because it was the only occurrence fully contained in the latest verified read of ${describeLines(resolution.readRange.start, resolution.readRange.end)}.`,
+		);
+		const oldText = normalizeToLF(resolution.oldText);
+		const offsets = findAllOccurrences(newContent, oldText);
+		if (offsets.length === 0) {
+			lines.push("No exact occurrences of the original oldText remain after this edit.", "");
+			continue;
+		}
+
+		lines.push(`Remaining exact occurrences of the original oldText (${Math.min(offsets.length, MAX_REMAINING_OCCURRENCES)} shown${offsets.length > MAX_REMAINING_OCCURRENCES ? `, ${offsets.length - MAX_REMAINING_OCCURRENCES} more omitted` : ""}):`);
+		const fuzzyContent = normalizeForFuzzyMatch(newContent);
+		const spans = getLineSpans(newContent);
+		for (const [index, offset] of offsets.slice(0, MAX_REMAINING_OCCURRENCES).entries()) {
+			const range = rangeFromOffset(spans, offset, oldText.length);
+			const expansion = findMinimalUniqueExpansion(newContent, fuzzyContent, spans, range);
+			if (!expansion) {
+				lines.push(`  ${index + 1}. ${describeLines(range.start, range.end)} — no unique prefix/suffix found within ${MAX_TOTAL_CONTEXT_LINES} context lines.`);
+				continue;
+			}
+			const where = `effective context: ${plural(expansion.prefixLines, "line")} before, ${plural(expansion.suffixLines, "line")} after`;
+			if (!isSnippetRenderable(expansion.text) || Buffer.byteLength(expansion.text, "utf8") > MAX_SUCCESS_SNIPPET_BYTES) {
+				lines.push(`  ${index + 1}. ${describeLines(range.start, range.end)} — ${where}; snippet omitted, read lines ${expansion.startLine}-${expansion.endLine}.`);
+				continue;
+			}
+			lines.push(`  ${index + 1}. ${describeLines(range.start, range.end)} — ${where}:`);
+			lines.push(...renderSnippet(expansion.text));
+		}
+		lines.push("Use one fenced snippet byte-for-byte as oldText if you want to edit another occurrence.", "");
+	}
+	if (resolutions.length > shownResolutions.length) {
+		lines.push(`${resolutions.length - shownResolutions.length} more auto-disambiguated edits were applied; details omitted.`);
+	}
+	return lines.join("\n").trimEnd();
 }
 
 export function formatEditFailure(opts: FormatFailureOptions): string {
