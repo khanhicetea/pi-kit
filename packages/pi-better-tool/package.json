@@ -1,6 +1,6 @@
 {
 	"name": "@khanhicetea/pi-better-tool",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "Better built-in tools for pi: an edit tool override that returns recovery context (closest match + disambiguation snippets) instead of bare failures",
 	"type": "module",
 	"license": "MIT",
