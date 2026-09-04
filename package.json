@@ -13,6 +13,7 @@
       "./packages/pi-dede/src/index.ts",
       "./packages/pi-wui/src/index.ts",
       "./packages/pi-better-tool/src/index.ts",
+      "./packages/pi-tactician/src/index.ts",
       "./packages/web-access-kit/extensions/web-access-kit.ts"
     ],
     "skills": [

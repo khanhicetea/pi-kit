@@ -1,0 +1,44 @@
+{
+  "name": "@khanhicetea/pi-tactician",
+  "version": "0.1.0",
+  "description": "Guide Pi models to batch independent work into fewer, context-efficient inference rounds",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khanhicetea/pi-kit.git",
+    "directory": "packages/pi-tactician"
+  },
+  "homepage": "https://github.com/khanhicetea/pi-kit/tree/main/packages/pi-tactician",
+  "bugs": {
+    "url": "https://github.com/khanhicetea/pi-kit/issues"
+  },
+  "keywords": ["pi-package", "pi-extension", "tool-calling", "parallel-tools", "tokens"],
+  "files": ["src", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
