@@ -29,7 +29,7 @@ export default function wiseBatcherExtension(pi: ExtensionAPI) {
 				.filter((value) => value.startsWith(prefix.trim()))
 				.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
-			const requested = args.trim().toLowerCase();
+			const requested = args.trim().toLowerCase() || "task";
 			if (requested && requested !== "task" && requested !== "session") {
 				ctx.ui.notify("Usage: /tactician-report [task|session]", "warning");
 				return;
