@@ -54,7 +54,7 @@ Inspect the complete active session branch:
 /tactician-report session
 ```
 
-The command creates a themed, TUI-only report; it is not sent to the model. The compact view shows calls per tool request, singleton rate, and finding count, wrapping on narrow terminals. Use Pi's tool-output expand key (Ctrl+O by default) for activity, observations, tools, diagnostics, costs, and evidence-backed findings.
+The command creates a themed, TUI-only report; it is not sent to the model. The compact view shows calls per tool request, calls per batched request (excluding singleton requests), singleton rate, and finding count, wrapping on narrow terminals. Use Pi's tool-output expand key (Ctrl+O by default) for activity, observations, tools, diagnostics, costs, and evidence-backed findings.
 
 ### Observations, not a score
 
@@ -62,7 +62,7 @@ A high singleton rate is not an error. Search → read, failed edit → repair, 
 
 The analyzer reports:
 
-- tool calls, assistant requests, calls per round, and singleton rate
+- tool calls, assistant requests, calls per round, calls per non-singleton batched request, and singleton rate
 - successful consecutive singleton edits, split by known same/different paths
 - repeated successful exact calls and identical read ranges, not pagination
 - same-path sibling mutations (an ordering concern, not proof of a write race)

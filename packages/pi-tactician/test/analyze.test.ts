@@ -35,7 +35,7 @@ describe("analyzeEntries", () => {
 			...batch([read("a.ts"), read("b.ts")]), ...batch([read("a.ts")]),
 		]);
 		expect(report).toMatchObject({ assistantRequests: 4, toolBatches: 4, toolCalls: 5, singletonBatches: 3,
-			callsPerBatch: 1.25, maxBatchSize: 2, consecutiveSingletonEdits: 1, consecutiveDifferentFileEdits: 1,
+			callsPerBatch: 1.25, callsPerBatchedRequest: 2, maxBatchSize: 2, consecutiveSingletonEdits: 1, consecutiveDifferentFileEdits: 1,
 			consecutiveReadOnlyBatches: 1, consecutiveSingletonReadOnlyBatches: 0,
 			repeatedExactCalls: 1, repeatedReads: 1, editCalls: 2, editBlocks: 2, maxContextTokens: 1000 });
 		expect(report.totalCost).toBeCloseTo(0.3);
@@ -47,6 +47,17 @@ describe("analyzeEntries", () => {
 		expect(report.findings[0].evidence[0].entryId).toMatch(/^entry-/);
 		expect(report.findings[0].evidence[0].toolCallId).toMatch(/^entry-/);
 		expect(report.findings[0].explanation).toContain("dependency is unknown");
+	});
+
+	it("computes calls per batched request without singleton requests", () => {
+		const r = analyzeEntries([
+			...batch([read("a")]),
+			...batch([read("b"), read("c")]),
+			...batch([read("d"), read("e"), read("f")]),
+		]);
+		expect(r.callsPerBatch).toBe(2);
+		expect(r.callsPerBatchedRequest).toBe(2.5);
+		expect(analyzeEntries(batch([read("a")])).callsPerBatchedRequest).toBe(0);
 	});
 
 	it("keeps equal-cost splitting a separate hypothetical scenario", () => {

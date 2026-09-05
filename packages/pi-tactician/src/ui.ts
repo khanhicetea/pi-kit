@@ -1,14 +1,14 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { findingLines, normalizeStoredReport, reportNotes, reportSections, type MetricRow, type StoredWiseBatchReport } from "./report.ts";
+import { findingLines, normalizeStoredReport, reportNotes, reportSections, type MetricRow, type StoredTacticianReport } from "./report.ts";
 
 function padRight(value: string, width: number): string {
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
 }
 
-class WiseBatchReportBody implements Component {
+class TacticianReportBody implements Component {
 	constructor(
-		private readonly data: StoredWiseBatchReport,
+		private readonly data: StoredTacticianReport,
 		private readonly expanded: boolean,
 		private readonly theme: Theme,
 	) {}
@@ -50,7 +50,8 @@ class WiseBatchReportBody implements Component {
 		const r = this.data.report;
 		const text = [
 			this.theme.fg("accent", this.theme.bold(`⚡ Tactician · ${this.data.scope === "task" ? "Task" : "Session"}`)),
-			`${this.theme.fg("muted", "Tool calls / batches")} ${r.toolCalls} / ${r.toolBatches} = ${this.theme.fg("accent", `${r.callsPerBatch.toFixed(2)} calls/request`)}`,
+			`${this.theme.fg("muted", "Calls / requests")} ${r.toolCalls} / ${r.toolBatches} = ${this.theme.fg("accent", `${r.callsPerBatch.toFixed(2)}`)}`,
+			`${this.theme.fg("muted", "Calls / batched request")} ${this.theme.fg("accent", r.callsPerBatchedRequest.toFixed(2))}`,
 			`${this.theme.fg("muted", "Singleton")} ${r.singletonBatches}/${r.toolBatches} (${(r.singletonRate * 100).toFixed(0)}%)`,
 			`${this.theme.fg("muted", "Findings")} ${r.findings.length}${r.omittedFindings ? "+" : ""}`,
 		].join(this.theme.fg("borderMuted", "  │  "));
@@ -76,9 +77,9 @@ class WiseBatchReportBody implements Component {
 	invalidate(): void {}
 }
 
-export function createReportComponent(data: StoredWiseBatchReport, expanded: boolean, theme: Theme): Component {
+export function createReportComponent(data: StoredTacticianReport, expanded: boolean, theme: Theme): Component {
 	const box = new Box(1, 0, text => theme.bg("customMessageBg", text));
-	box.addChild(new WiseBatchReportBody(normalizeStoredReport(data), expanded, theme));
+	box.addChild(new TacticianReportBody(normalizeStoredReport(data), expanded, theme));
 	// Box padding alone can exceed tiny terminal widths.
 	return {
 		render: width => width <= 0 ? [] : box.render(width).map(line => truncateToWidth(line, width, "")),

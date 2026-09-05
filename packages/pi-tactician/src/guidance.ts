@@ -1,6 +1,6 @@
-export const GUIDANCE_MARKER = "## Wise batching: minimize inference barriers";
+export const GUIDANCE_MARKER = "## Tactician: minimize inference barriers";
 
-export const WISE_BATCHING_GUIDANCE = `${GUIDANCE_MARKER}
+export const TACTICIAN_GUIDANCE = `${GUIDANCE_MARKER}
 
 Optimize for completing the requested task correctly with the fewest necessary
 model round trips, not for larger batches or fewer tool calls in isolation.

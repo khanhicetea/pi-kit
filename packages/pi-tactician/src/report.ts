@@ -1,14 +1,14 @@
 import { stripVTControlCharacters } from "node:util";
-import { emptyReport, type BatchingFinding, type FindingEvidence, type WiseBatchReport } from "./analyze.ts";
+import { emptyReport, type BatchingFinding, type FindingEvidence, type TacticianReport } from "./analyze.ts";
 
 export const REPORT_ENTRY_TYPE = "pi-tactician-report";
 export const REPORT_SCHEMA_VERSION = 2;
 
-export interface StoredWiseBatchReport {
+export interface StoredTacticianReport {
 	/** Absent on reports saved before metric corrections. */
 	schemaVersion?: 2;
 	scope: "task" | "session";
-	report: WiseBatchReport;
+	report: TacticianReport;
 }
 export interface MetricRow {
 	label: string;
@@ -33,11 +33,11 @@ export function dollars(value: number): string {
 }
 
 /** Treat persisted entries as untrusted, potentially older data. Never reinterpret legacy characters as bytes. */
-export function normalizeStoredReport(value: unknown): StoredWiseBatchReport {
+export function normalizeStoredReport(value: unknown): StoredTacticianReport {
 	const data = record(value);
 	const raw = record(data.report);
 	const report = emptyReport();
-	for (const key of Object.keys(report) as Array<keyof WiseBatchReport>) {
+	for (const key of Object.keys(report) as Array<keyof TacticianReport>) {
 		if (typeof report[key] === "number" && validNumber(raw[key])) {
 			(report as unknown as Record<string, unknown>)[key] = raw[key];
 		}
@@ -49,6 +49,9 @@ export function normalizeStoredReport(value: unknown): StoredWiseBatchReport {
 	}
 	report.callsPerBatch = report.toolBatches ? report.toolCalls / report.toolBatches : 0;
 	report.singletonBatches = Math.min(report.singletonBatches, report.toolBatches);
+	const batchedRequests = report.toolBatches - report.singletonBatches;
+	const batchedCalls = Math.max(0, report.toolCalls - report.singletonBatches);
+	report.callsPerBatchedRequest = batchedRequests ? batchedCalls / batchedRequests : 0;
 	report.singletonRate = report.toolBatches ? report.singletonBatches / report.toolBatches : 0;
 	report.pricedRequests = Math.min(report.pricedRequests, report.assistantRequests);
 	if (data.schemaVersion === REPORT_SCHEMA_VERSION && Array.isArray(raw.findings)) {
@@ -74,7 +77,7 @@ export function normalizeStoredReport(value: unknown): StoredWiseBatchReport {
 	return { schemaVersion: data.schemaVersion === REPORT_SCHEMA_VERSION ? REPORT_SCHEMA_VERSION : undefined, scope: data.scope === "session" ? "session" : "task", report };
 }
 
-export function reportSections(data: StoredWiseBatchReport): ReportSection[] {
+export function reportSections(data: StoredTacticianReport): ReportSection[] {
 	const { report: r } = data;
 	const modern = data.schemaVersion === REPORT_SCHEMA_VERSION;
 	const observations: MetricRow[] = [
@@ -108,6 +111,7 @@ export function reportSections(data: StoredWiseBatchReport): ReportSection[] {
 			{ label: "Tool rounds", value: String(r.toolBatches) },
 			{ label: "Tool calls", value: String(r.toolCalls) },
 			{ label: "Calls / round", value: r.callsPerBatch.toFixed(2), tone: "accent" },
+			{ label: "Calls / batched request", value: r.callsPerBatchedRequest.toFixed(2), tone: "accent" },
 			{ label: "Singleton rounds", value: `${r.singletonBatches}/${r.toolBatches} (${(r.singletonRate * 100).toFixed(1)}%)` },
 			{ label: "Largest batch", value: String(r.maxBatchSize) },
 		] },
@@ -123,7 +127,7 @@ export function reportSections(data: StoredWiseBatchReport): ReportSection[] {
 	];
 }
 
-export function findingLines(data: StoredWiseBatchReport): string[] {
+export function findingLines(data: StoredTacticianReport): string[] {
 	const lines = data.report.findings.flatMap(finding => [
 		`${finding.confidence === "possible" ? "Possible opportunity" : "Observed pattern"}: ${finding.kind}`,
 		finding.evidence.map(ref => `Request ${ref.request}${ref.entryId ? ` [entry ${ref.entryId}]` : ""}: ${ref.tool}${ref.path ? ` ${ref.path}` : ""}${ref.toolCallId ? ` [call ${ref.toolCallId}]` : ""}`).join(" → "),
@@ -133,14 +137,14 @@ export function findingLines(data: StoredWiseBatchReport): string[] {
 	if (data.report.omittedFindings) lines.push(`${data.report.omittedFindings} additional findings omitted (showing at most 20).`);
 	return lines.map(displayText);
 }
-export function reportNotes(data: StoredWiseBatchReport): string[] {
+export function reportNotes(data: StoredTacticianReport): string[] {
 	return [
 		...(data.schemaVersion === REPORT_SCHEMA_VERSION ? [] : ["Legacy or unsupported report schema: metrics may use older definitions. Run /tactician-report again for corrected metrics."]),
 		"Sequential rounds and singleton rates are observations, not evidence of wasted work. Search→read and repair dependencies can require waiting.",
 		"Costs are recorded amounts only; missing components are not inferred. The equal-cost split scenario sums batch cost × (calls − 1), assumes identical split-request costs, and is not measured savings. Sequential-edit cost is not a savings ceiling.",
 	];
 }
-export function formatReport(value: StoredWiseBatchReport): string {
+export function formatReport(value: StoredTacticianReport): string {
 	const data = normalizeStoredReport(value);
 	return [
 		`Tactician · ${data.scope === "task" ? "current task" : "active session branch"}`,

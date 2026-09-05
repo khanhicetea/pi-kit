@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { analyzeEntries, emptyReport } from "../src/analyze.ts";
-import { formatReport, normalizeStoredReport, REPORT_SCHEMA_VERSION, type StoredWiseBatchReport } from "../src/report.ts";
+import { formatReport, normalizeStoredReport, REPORT_SCHEMA_VERSION, type StoredTacticianReport } from "../src/report.ts";
 
-const modern = (report = emptyReport()): StoredWiseBatchReport => ({ schemaVersion: REPORT_SCHEMA_VERSION, scope: "task" as const, report });
+const modern = (report = emptyReport()): StoredTacticianReport => ({ schemaVersion: REPORT_SCHEMA_VERSION, scope: "task" as const, report });
 
 describe("report persistence and formatting", () => {
 	it("distinguishes absent pricing from recorded zero cost", () => {
@@ -41,7 +41,10 @@ describe("report persistence and formatting", () => {
 		expect(text).toContain("Request 1: edit a.ts");
 		expect(text).not.toContain("\x1b");
 	});
-	it("renders empty modern reports without suggesting optimal batching", () => {
+	it("shows calls per batched request and renders empty reports safely", () => {
+		const report = { ...emptyReport(), toolBatches: 3, toolCalls: 6, singletonBatches: 1 };
+		const text = formatReport(modern(report));
+		expect(text).toContain("Calls / batched request: 2.50");
 		expect(formatReport(modern(analyzeEntries([])))).toContain("not proof of optimal batching");
 	});
 });

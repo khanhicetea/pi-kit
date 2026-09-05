@@ -16,13 +16,15 @@ export interface BatchingFinding {
 	explanation: string;
 }
 
-export interface WiseBatchReport {
+export interface TacticianReport {
 	assistantRequests: number;
 	toolBatches: number;
 	toolCalls: number;
 	singletonBatches: number;
 	maxBatchSize: number;
 	callsPerBatch: number;
+	/** Mean calls in non-singleton tool requests. */
+	callsPerBatchedRequest: number;
 	singletonRate: number;
 	toolCounts: Record<string, number>;
 	consecutiveSingletonEdits: number;
@@ -106,10 +108,10 @@ function isTruncated(message: UnknownRecord, text: string): boolean {
 	return /^(?:\[)?Output truncated(?:\b|:)/im.test(text) || /^\[Showing lines \d+-\d+ of \d+.*(?:limit|truncat)/im.test(text);
 }
 
-export function emptyReport(): WiseBatchReport {
+export function emptyReport(): TacticianReport {
 	return {
 		assistantRequests: 0, toolBatches: 0, toolCalls: 0, singletonBatches: 0, maxBatchSize: 0,
-		callsPerBatch: 0, singletonRate: 0, toolCounts: Object.create(null), consecutiveSingletonEdits: 0,
+		callsPerBatch: 0, callsPerBatchedRequest: 0, singletonRate: 0, toolCounts: Object.create(null), consecutiveSingletonEdits: 0,
 		consecutiveDifferentFileEdits: 0, consecutiveSameFileEdits: 0, consecutiveSingletonBash: 0,
 		consecutiveReadOnlyBatches: 0, consecutiveSingletonReadOnlyBatches: 0,
 		repeatedExactCalls: 0, repeatedReads: 0, samePathSiblingMutations: 0,
@@ -122,7 +124,7 @@ export function emptyReport(): WiseBatchReport {
 }
 
 /** Analyze the supplied historical branch without inspecting the current filesystem. */
-export function analyzeEntries(entries: readonly unknown[], options: { cwd?: string } = {}): WiseBatchReport {
+export function analyzeEntries(entries: readonly unknown[], options: { cwd?: string } = {}): TacticianReport {
 	const report = emptyReport();
 	const timeline: Array<Batch | null> = [];
 	const pending = new Map<string, ParsedCall>();
@@ -269,6 +271,9 @@ export function analyzeEntries(entries: readonly unknown[], options: { cwd?: str
 		previous = batch;
 	}
 	report.callsPerBatch = report.toolBatches ? report.toolCalls / report.toolBatches : 0;
+	const batchedRequests = report.toolBatches - report.singletonBatches;
+	const batchedCalls = report.toolCalls - report.singletonBatches;
+	report.callsPerBatchedRequest = batchedRequests ? batchedCalls / batchedRequests : 0;
 	report.singletonRate = report.toolBatches ? report.singletonBatches / report.toolBatches : 0;
 	return report;
 }

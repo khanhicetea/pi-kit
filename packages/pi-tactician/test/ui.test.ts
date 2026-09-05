@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { emptyReport } from "../src/analyze.ts";
-import type { StoredWiseBatchReport } from "../src/report.ts";
+import type { StoredTacticianReport } from "../src/report.ts";
 import { createReportComponent } from "../src/ui.ts";
 
 const theme = {
@@ -11,7 +11,7 @@ const theme = {
 	bold: (text: string) => `**${text}**`,
 } as unknown as Theme;
 
-const data: StoredWiseBatchReport = {
+const data: StoredTacticianReport = {
 	schemaVersion: 2,
 	scope: "task",
 	report: {
@@ -45,15 +45,17 @@ const data: StoredWiseBatchReport = {
 	},
 };
 
-describe("wise batcher report UI", () => {
+describe("Tactician report UI", () => {
 	it("renders one high-signal summary line when space allows", () => {
 		const lines = createReportComponent(data, false, theme).render(200);
 		const text = lines.join("\n");
 		expect(lines).toHaveLength(1);
 		expect(text).toContain("Tactician · Task");
-		expect(text).toContain("Tool calls / batches");
+		expect(text).toContain("Calls / requests");
 		expect(text).toContain("12 / 7");
-		expect(text).toContain("1.71 calls/request");
+		expect(text).toContain("1.71");
+		expect(text).toContain("Calls / batched request");
+		expect(text).toContain("3.50");
 		expect(text).toContain("Singleton");
 		expect(text).toContain("Findings");
 		expect(text).not.toContain("saved");
