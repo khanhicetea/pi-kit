@@ -1,6 +1,7 @@
 export const GUIDANCE_MARKER = "## Tactician: minimize inference barriers";
 
-export const TACTICIAN_GUIDANCE = `${GUIDANCE_MARKER}
+export const TACTICIAN_GUIDANCE = `<tactician_system_prompt>
+${GUIDANCE_MARKER}
 
 Optimize for completing the requested task correctly with the fewest necessary
 model round trips, not for larger batches or fewer tool calls in isolation.
@@ -67,4 +68,7 @@ requires it—not simply because the next phase began.
 Before sending: is there another useful, independent call already ready? Include
 it. Does a proposed call need a result first, conflict with a sibling, or add no
 needed evidence? Defer or omit it. When the task is complete, answer; do not make
-extra calls to demonstrate thoroughness.`;
+extra calls to demonstrate thoroughness.
+
+If you spawn subagents, append this complete <tactician_system_prompt>...</tactician_system_prompt> block to each subagent's prompt.
+</tactician_system_prompt>`;
