@@ -1,13 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { analyzeEntries, entriesForLatestUserTask } from "./analyze.ts";
 import { GUIDANCE_MARKER, WISE_BATCHING_GUIDANCE } from "./guidance.ts";
-import { formatReport, REPORT_ENTRY_TYPE, type StoredWiseBatchReport } from "./report.ts";
+import { REPORT_ENTRY_TYPE, REPORT_SCHEMA_VERSION, type StoredWiseBatchReport } from "./report.ts";
 import { createReportComponent } from "./ui.ts";
 
 export { analyzeEntries, entriesForLatestUserTask } from "./analyze.ts";
-export type { WiseBatchReport } from "./analyze.ts";
+export type { WiseBatchReport, BatchingFinding, FindingEvidence } from "./analyze.ts";
 export { GUIDANCE_MARKER, WISE_BATCHING_GUIDANCE } from "./guidance.ts";
-export { formatReport, REPORT_ENTRY_TYPE } from "./report.ts";
+export { formatReport, normalizeStoredReport, REPORT_ENTRY_TYPE, REPORT_SCHEMA_VERSION } from "./report.ts";
 export type { StoredWiseBatchReport } from "./report.ts";
 export { createReportComponent } from "./ui.ts";
 
@@ -23,10 +23,10 @@ export default function wiseBatcherExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tactician-report", {
-		description: "Report tool batching and avoidable inference barriers for the current task or session",
+		description: "Report tool batching observations and evidence-backed findings for the current task or session",
 		getArgumentCompletions: (prefix) =>
 			["task", "session"]
-				.filter((value) => value.startsWith(prefix.trim()))
+				.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
 				.map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
 			const requested = args.trim().toLowerCase() || "task";
@@ -38,10 +38,10 @@ export default function wiseBatcherExtension(pi: ExtensionAPI) {
 			const scope = requested === "session" ? "session" : "task";
 			const branch = ctx.sessionManager.getBranch();
 			const selected = scope === "session" ? branch : entriesForLatestUserTask(branch);
-			const data: StoredWiseBatchReport = { scope, report: analyzeEntries(selected) };
+			const data: StoredWiseBatchReport = { schemaVersion: REPORT_SCHEMA_VERSION, scope, report: analyzeEntries(selected, { cwd: ctx.cwd }) };
 			pi.appendEntry(REPORT_ENTRY_TYPE, data);
 			ctx.ui.notify(
-				`Wise Batcher: ${data.report.toolBatches} rounds, ${data.report.callsPerBatch.toFixed(2)} calls/round, ${(data.report.singletonRate * 100).toFixed(0)}% singleton`,
+				`Tactician: ${data.report.toolBatches} rounds, ${data.report.callsPerBatch.toFixed(2)} calls/round, ${data.report.findings.length}${data.report.omittedFindings ? "+" : ""} findings`,
 				"info",
 			);
 		},

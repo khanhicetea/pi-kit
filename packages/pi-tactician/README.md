@@ -54,21 +54,40 @@ Inspect the complete active session branch:
 /tactician-report session
 ```
 
-The command creates a themed, TUI-only report; it is not sent to the model. The default view is a single high-signal line showing tool calls per tool request, singleton rate, and edit/bash/read barriers. It wraps only when the terminal is narrow. Use Pi's tool-output expand key (Ctrl+O by default) to reveal the full tables for tools, diagnostics, context, and cost.
+The command creates a themed, TUI-only report; it is not sent to the model. The compact view shows calls per tool request, singleton rate, and finding count, wrapping on narrow terminals. Use Pi's tool-output expand key (Ctrl+O by default) for activity, observations, tools, diagnostics, costs, and evidence-backed findings.
 
-It reports:
+### Observations, not a score
 
-- tool calls and inference rounds
-- calls per round and singleton rate
-- consecutive singleton edit/bash/read-only barriers
-- different-file versus same-file edit chains
-- repeated exact calls and repeated read paths
-- edit calls versus edit blocks
-- errors, truncation, and tool-result volume
-- recorded request cost and maximum observed context
-- an upper-bound cost associated with sequential edit requests
+A high singleton rate is not an error. Search → read, failed edit → repair, and other information dependencies can legitimately require separate requests. Sequential Bash/read-only chains remain neutral observations; the analyzer does not infer independence from tool names or parse shell commands.
 
-The upper bound is diagnostic, not guaranteed savings: later edits can genuinely depend on earlier results.
+The analyzer reports:
+
+- tool calls, assistant requests, calls per round, and singleton rate
+- successful consecutive singleton edits, split by known same/different paths
+- repeated successful exact calls and identical read ranges, not pagination
+- same-path sibling mutations (an ordering concern, not proof of a write race)
+- edit calls and blocks, including historical single-replacement arguments
+- tool errors and truncation (structured metadata preferred, banner fallback)
+- UTF-8 text-result bytes and maximum input context including cache reads/writes
+- recorded parent request cost, pricing coverage, component costs, nested tool costs, and compaction/branch-summary costs separately
+
+Repeat tracking resets at user/instruction, compaction, and text-only assistant boundaries. File mutations invalidate matching paths; opaque tools such as Bash invalidate all repeat tracking conservatively. Path comparison is lexical, resolved against the session cwd, without inspecting today's filesystem or resolving historical symlinks. External changes can still justify an identical read.
+
+### Evidence-backed findings
+
+The report includes up to 20 findings with request numbers, available entry/tool-call IDs, paths, and explanations:
+
+- **Possible cross-file batching:** consecutive edits both succeeded, but dependency remains unknown.
+- **Possible repeated read:** an identical range succeeded twice without a known intervening mutation.
+- **Observed same-path mutations:** sibling calls target the same normalized path; Pi may serialize them.
+
+Calls without matched results do not establish successful edits or repeated reads. Findings are deterministic: no extra model calls or filesystem reads. Additional findings are counted rather than retained indefinitely.
+
+### Cost interpretation and saved reports
+
+The expanded **equal-cost split scenario** sums `batch cost × (calls − 1)`. It assumes each hypothetical split request costs as much as the original batch. It is **not measured savings** and is intentionally absent from the compact view. Sequential-edit request cost is an observed amount, not a savings ceiling. Missing costs/components are not inferred; recorded zero pricing is distinct from absent pricing.
+
+New reports use schema version 2. Older reports remain renderable with a legacy notice and retain character units rather than incorrectly converting them to bytes. Rerun the command to compute corrected metrics. Text and TUI views share metric definitions; `formatReport()` remains available programmatically.
 
 ## Development
 

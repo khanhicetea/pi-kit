@@ -1,6 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { emptyReport } from "../src/analyze.ts";
 import type { StoredWiseBatchReport } from "../src/report.ts";
 import { createReportComponent } from "../src/ui.ts";
 
@@ -11,8 +12,10 @@ const theme = {
 } as unknown as Theme;
 
 const data: StoredWiseBatchReport = {
+	schemaVersion: 2,
 	scope: "task",
 	report: {
+		...emptyReport(),
 		assistantRequests: 9,
 		toolBatches: 7,
 		toolCalls: 12,
@@ -47,14 +50,14 @@ describe("wise batcher report UI", () => {
 		const lines = createReportComponent(data, false, theme).render(200);
 		const text = lines.join("\n");
 		expect(lines).toHaveLength(1);
-		expect(text).toContain("Wise Batcher · Task");
+		expect(text).toContain("Tactician · Task");
 		expect(text).toContain("Tool calls / batches");
 		expect(text).toContain("12 / 7");
 		expect(text).toContain("1.71 calls/request");
 		expect(text).toContain("Singleton");
-		expect(text).toContain("Barriers");
-		expect(text).toContain("Est. saved vs singletons");
-		expect(text).toContain("$0.18");
+		expect(text).toContain("Findings");
+		expect(text).not.toContain("saved");
+		expect(text).not.toContain("$0.18");
 		expect(lines.every((line) => visibleWidth(line) <= 200)).toBe(true);
 	});
 
@@ -63,13 +66,26 @@ describe("wise batcher report UI", () => {
 		const text = lines.join("\n");
 		expect(text).toContain("TOOLS");
 		expect(text).toContain("DIAGNOSTICS");
-		expect(text).toContain("Recorded request cost");
-		expect(text).toContain("Est. saved vs singleton calls");
+		expect(text).toContain("COST");
+		expect(text).toContain("Equal-cost split scenario");
+		expect(text).toContain("INTERPRETATION");
 		expect(lines.every((line) => visibleWidth(line) <= 64)).toBe(true);
 	});
 
-	it("stays within narrow terminal widths", () => {
-		const lines = createReportComponent(data, true, theme).render(28);
-		expect(lines.every((line) => visibleWidth(line) <= 28)).toBe(true);
+	it.each([0, 1, 2, 3, 10, 28, 64, 80, 120, 200])("stays within terminal width %i", width => {
+		for (const expanded of [true, false]) {
+			const lines = createReportComponent(data, expanded, theme).render(width);
+			expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
+		}
+	});
+
+	it("does not color high singleton rates as errors", () => {
+		const tones: string[] = [];
+		const recordingTheme = { ...theme, fg: (tone: string, text: string) => { tones.push(tone); return text; } } as Theme;
+		const singleton = { ...data, report: { ...emptyReport(), toolBatches: 1, toolCalls: 1, singletonBatches: 1, singletonRate: 1 } };
+		createReportComponent(singleton, false, recordingTheme).render(200);
+		createReportComponent(singleton, true, recordingTheme).render(80);
+		expect(tones).not.toContain("error");
+		expect(tones).not.toContain("warning");
 	});
 });

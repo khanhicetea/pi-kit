@@ -57,8 +57,25 @@ describe("pi-tactician extension", () => {
 		await command.handler("", { sessionManager: { getBranch: () => branch }, ui: { notify } });
 		expect(state.appendEntry).toHaveBeenCalledWith(
 			REPORT_ENTRY_TYPE,
-			expect.objectContaining({ scope: "task", report: expect.objectContaining({ toolBatches: 1 }) }),
+			expect.objectContaining({ schemaVersion: 2, scope: "task", report: expect.objectContaining({ toolBatches: 1 }) }),
 		);
 		expect(notify).toHaveBeenCalled();
+	});
+
+	it("selects task versus session scope and rejects invalid arguments", async () => {
+		const state = mockPi();
+		extension(state.api);
+		const command = state.commands.get("tactician-report") as { handler: (args: string, ctx: unknown) => Promise<void>; getArgumentCompletions: (prefix: string) => unknown };
+		const user = { type: "message", message: { role: "user", content: "task" } };
+		const assistant = { type: "message", message: { role: "assistant", content: [] } };
+		const ctx = { cwd: "/repo", sessionManager: { getBranch: () => [user, assistant, user, assistant] }, ui: { notify: vi.fn() } };
+		await command.handler("task", ctx);
+		expect(state.appendEntry).toHaveBeenLastCalledWith(REPORT_ENTRY_TYPE, expect.objectContaining({ report: expect.objectContaining({ assistantRequests: 1 }) }));
+		await command.handler(" SESSION ", ctx);
+		expect(state.appendEntry).toHaveBeenLastCalledWith(REPORT_ENTRY_TYPE, expect.objectContaining({ scope: "session", report: expect.objectContaining({ assistantRequests: 2 }) }));
+		await command.handler("invalid", ctx);
+		expect(state.appendEntry).toHaveBeenCalledTimes(2);
+		expect(ctx.ui.notify).toHaveBeenLastCalledWith("Usage: /tactician-report [task|session]", "warning");
+		expect(command.getArgumentCompletions(" S")).toEqual([{ value: "session", label: "session" }]);
 	});
 });
