@@ -27,6 +27,11 @@ The extension adds stable system guidance before each agent run:
 
 It deliberately registers **no model-callable tool**. A wrapper tool would add schema/context overhead and Pi already supports native sibling tool calls.
 
+## Batch markers
+
+In Pi's TUI, every assistant request containing two or more tool calls gets a compact, themed transcript marker such as `▣ Batch ×3 · read · ffgrep · read`. It sits with that request's tool activity, making concurrent sibling calls easy to scan; expand it for a short concurrency note. Markers are TUI-only session entries and are never sent to the model.
+
+
 ## Install
 
 ```bash

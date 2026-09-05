@@ -1,6 +1,64 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { findingLines, normalizeStoredReport, reportNotes, reportSections, type MetricRow, type StoredTacticianReport } from "./report.ts";
+import { displayText, findingLines, normalizeStoredReport, reportNotes, reportSections, type MetricRow, type StoredTacticianReport } from "./report.ts";
+
+export const BATCH_ENTRY_TYPE = "pi-tactician-batch";
+export const BATCH_SCHEMA_VERSION = 1;
+
+export interface ToolBatch {
+	toolCallIds: string[];
+	tools: string[];
+}
+
+export interface StoredTacticianBatch {
+	schemaVersion: 1;
+	tools: string[];
+}
+
+function record(value: unknown): Record<string, unknown> {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function toolBatchFromEntry(entry: unknown): ToolBatch | undefined {
+	const message = record(record(entry).message);
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return undefined;
+	const calls = message.content.map(record).filter(item => item.type === "toolCall");
+	if (!calls.length) return undefined;
+	return {
+		toolCallIds: calls.map(item => typeof item.id === "string" ? item.id : "").filter(Boolean),
+		tools: calls.map(item => displayText(typeof item.name === "string" ? item.name : "unknown")),
+	};
+}
+
+/** Return the sibling tool calls from the latest assistant request containing a given call. */
+export function findBatchContainingToolCall(entries: readonly unknown[], toolCallId: string): ToolBatch | undefined {
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const batch = toolBatchFromEntry(entries[index]);
+		if (batch?.toolCallIds.includes(toolCallId)) return batch;
+	}
+	return undefined;
+}
+
+export function createBatchMarkerComponent(value: unknown, expanded: boolean, theme: Theme): Component {
+	const data = record(value);
+	const tools = Array.isArray(data.tools)
+		? data.tools.filter((tool): tool is string => typeof tool === "string").slice(0, 12).map(displayText)
+		: [];
+	const count = tools.length;
+	const summary = `${theme.fg("accent", theme.bold(`▣ Batch ×${count}`))}${theme.fg("muted", "  sibling tool calls  ")}${tools.join(theme.fg("borderMuted", " · "))}`;
+	const box = new Box(1, 0, text => theme.bg("customMessageBg", text));
+	box.addChild({
+		render: width => wrapTextWithAnsi(summary, Math.max(1, width)),
+		invalidate() {},
+	});
+	if (expanded) {
+		box.addChild({
+			render: width => wrapTextWithAnsi(theme.fg("muted", "These calls came from one assistant request and may execute concurrently."), Math.max(1, width)),
+			invalidate() {},
+		});
+	}
+	return box;
+}
 
 function padRight(value: string, width: number): string {
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));

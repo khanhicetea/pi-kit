@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import extension, { GUIDANCE_MARKER, REPORT_ENTRY_TYPE } from "../src/index.ts";
+import extension, { BATCH_ENTRY_TYPE, GUIDANCE_MARKER, REPORT_ENTRY_TYPE } from "../src/index.ts";
 
 function mockPi() {
 	const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -31,9 +31,31 @@ describe("pi-tactician extension", () => {
 		expect(state.renderers.has(REPORT_ENTRY_TYPE)).toBe(true);
 
 		const handler = state.handlers.get("before_agent_start")!;
-		const changed = handler({ systemPrompt: "base" }) as { systemPrompt: string };
+		const ctx = { sessionManager: { getEntries: () => [], getBranch: () => [] } };
+		const changed = handler({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
 		expect(changed.systemPrompt).toContain(GUIDANCE_MARKER);
-		expect(handler({ systemPrompt: changed.systemPrompt })).toBeUndefined();
+		expect(handler({ systemPrompt: changed.systemPrompt }, ctx)).toBeUndefined();
+	});
+
+	it("adds a TUI-only marker once for a sibling tool batch", () => {
+		const state = mockPi();
+		extension(state.api);
+		const branch = [{
+			type: "message",
+			message: { role: "assistant", content: [
+				{ type: "toolCall", id: "one", name: "read", arguments: { path: "a" } },
+				{ type: "toolCall", id: "two", name: "ffgrep", arguments: { pattern: "x" } },
+			] },
+		}];
+		const ctx = {
+			mode: "tui",
+			sessionManager: { getEntries: () => branch, getBranch: () => branch },
+		};
+		const handler = state.handlers.get("tool_execution_start")!;
+		handler({ toolCallId: "one" }, ctx);
+		handler({ toolCallId: "two" }, ctx);
+		expect(state.appendEntry).toHaveBeenCalledTimes(1);
+		expect(state.appendEntry).toHaveBeenCalledWith(BATCH_ENTRY_TYPE, { schemaVersion: 1, tools: ["read", "ffgrep"] });
 	});
 
 	it("stores a TUI-only report entry for the current task", async () => {

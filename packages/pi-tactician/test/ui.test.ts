@@ -3,7 +3,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { emptyReport } from "../src/analyze.ts";
 import type { StoredTacticianReport } from "../src/report.ts";
-import { createReportComponent } from "../src/ui.ts";
+import { createBatchMarkerComponent, createReportComponent, findBatchContainingToolCall } from "../src/ui.ts";
 
 const theme = {
 	fg: (_color: string, text: string) => text,
@@ -89,5 +89,13 @@ describe("Tactician report UI", () => {
 		createReportComponent(singleton, true, recordingTheme).render(80);
 		expect(tones).not.toContain("error");
 		expect(tones).not.toContain("warning");
+	});
+
+	it("renders a compact transcript marker for sibling tool calls", () => {
+		const compact = createBatchMarkerComponent({ schemaVersion: 1, tools: ["read", "ffgrep", "read"] }, false, theme).render(100).join("\n");
+		const expanded = createBatchMarkerComponent({ schemaVersion: 1, tools: ["read", "ffgrep", "read"] }, true, theme).render(100).join("\n");
+		expect(compact).toContain("Batch ×3");
+		expect(compact).toContain("sibling tool calls");
+		expect(expanded).toContain("may execute concurrently");
 	});
 });

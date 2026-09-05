@@ -1,6 +1,6 @@
 {
   "name": "@khanhicetea/pi-tactician",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Guide Pi models to batch independent work into fewer, context-efficient inference rounds",
   "type": "module",
   "license": "MIT",
