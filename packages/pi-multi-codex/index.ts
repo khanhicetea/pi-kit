@@ -1,8 +1,14 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Provider } from "@earendil-works/pi-ai";
-import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
+import type {
+  Api,
+  Model,
+  ModelsStoreEntry,
+  Provider,
+  RefreshModelsContext,
+} from "@earendil-works/pi-ai";
+import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import {
   CONFIG_DIR_NAME,
   type ExtensionAPI,
@@ -19,7 +25,40 @@ import {
 } from "./usage.js";
 
 const PROVIDER_PREFIX = CODEX_PROVIDER_PREFIX;
+const MODEL_CATALOG_BASE_URL = "https://pi.dev";
+const MODEL_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DEFAULT_SLOTS = 3;
+
+interface CatalogStoreEntry extends ModelsStoreEntry {
+  etag?: string;
+}
+
+interface CatalogPublication {
+  persist?: CatalogStoreEntry | null;
+  update?: () => void;
+}
+
+interface LegacyCatalogStore {
+  read(): Promise<ModelsStoreEntry | undefined>;
+  write(entry: ModelsStoreEntry): Promise<void>;
+  delete(): Promise<void>;
+}
+
+interface RefreshModelsContextCompat {
+  stored?: Readonly<CatalogStoreEntry>;
+  store?: LegacyCatalogStore;
+  publish?: (publication: CatalogPublication) => Promise<boolean>;
+  allowNetwork: boolean;
+  force?: boolean;
+  signal?: AbortSignal;
+}
+
+interface BuiltinCatalogHelpers {
+  getBuiltinModelDataGeneratedAt?: () => number | undefined;
+  getBuiltinModelDataUrl?: (provider: string) => URL;
+}
+
+const builtinCatalogHelpers = builtinProviderCatalog as unknown as BuiltinCatalogHelpers;
 const AUTO_USAGE_INTERVAL_MS = 5 * 60 * 1000;
 const SHARED_USAGE_STATE_KEY = "__piMultiCodexUsageStateV3";
 const USAGE_WIDGET_ID = "multi-codex-usage";
@@ -295,21 +334,217 @@ function slotCount(): number {
   return Number(value);
 }
 
+type CodexModel = Model<"openai-codex-responses">;
+
+async function localCatalogLastModified(providerId: string): Promise<number | undefined> {
+  const generatedAt = builtinCatalogHelpers.getBuiltinModelDataGeneratedAt?.();
+  if (generatedAt !== undefined) return generatedAt;
+
+  const catalogUrl = builtinCatalogHelpers.getBuiltinModelDataUrl?.(providerId);
+  if (!catalogUrl) return undefined;
+  return stat(catalogUrl).then((value) => value.mtimeMs, () => undefined);
+}
+
+function mergeCatalogModels(
+  baseline: readonly CodexModel[],
+  dynamic: readonly CodexModel[],
+): CodexModel[] {
+  const merged = [...baseline];
+  for (const model of dynamic) {
+    const index = merged.findIndex((entry) => entry.id === model.id);
+    if (index >= 0) merged[index] = model;
+    else merged.push(model);
+  }
+  return merged;
+}
+
+function slotModel(model: Model<Api>, providerId: string, slot: number): CodexModel {
+  const prefix = `[Codex ${slot}] `;
+  const name = typeof model.name === "string" ? model.name : model.id;
+  return {
+    ...model,
+    provider: providerId,
+    name: name.startsWith(prefix) ? name : `${prefix}${name}`,
+  } as CodexModel;
+}
+
+function catalogEntries(value: unknown): Record<string, unknown>[] {
+  const entries = Array.isArray(value)
+    ? value
+    : isRecord(value) && Array.isArray(value.models)
+      ? value.models
+      : isRecord(value)
+        ? Object.values(value)
+        : undefined;
+  if (!entries) throw new Error("Invalid OpenAI Codex model catalog");
+  return entries.filter(
+    (entry): entry is Record<string, unknown> => isRecord(entry) && "id" in entry,
+  );
+}
+
+function parseSlotCatalog(
+  value: unknown,
+  providerId: string,
+  slot: number,
+): CodexModel[] {
+  return catalogEntries(value).map((entry) => (
+    slotModel(entry as unknown as Model<Api>, providerId, slot)
+  ));
+}
+
+function restoreSlotCatalog(
+  stored: ModelsStoreEntry | undefined,
+  sourceId: string,
+  providerId: string,
+  slot: number,
+  localGeneratedAt: number | undefined,
+): CodexModel[] {
+  if (!stored) return [];
+  if (
+    localGeneratedAt !== undefined
+    && (stored.lastModified === undefined || stored.lastModified <= localGeneratedAt)
+  ) {
+    return [];
+  }
+
+  return stored.models
+    .filter((model) => model.provider === providerId || model.provider === sourceId)
+    .map((model) => slotModel(model, providerId, slot));
+}
+
+async function readCatalogStore(
+  context: RefreshModelsContextCompat,
+): Promise<CatalogStoreEntry | undefined> {
+  if (typeof context.publish === "function") {
+    return context.stored as CatalogStoreEntry | undefined;
+  }
+  if (!context.store) throw new Error("Model catalog refresh context has no storage");
+  return await context.store.read() as CatalogStoreEntry | undefined;
+}
+
+async function publishCatalog(
+  context: RefreshModelsContextCompat,
+  publication: CatalogPublication,
+): Promise<boolean> {
+  if (typeof context.publish === "function") return context.publish(publication);
+  if (!context.store) throw new Error("Model catalog refresh context has no storage");
+  publication.update?.();
+  if (publication.persist !== undefined) {
+    if (publication.persist === null) await context.store.delete();
+    else await context.store.write(publication.persist);
+  }
+  return true;
+}
+
+/**
+ * coding-agent wraps its own built-in provider with the pi.dev catalog, but
+ * extensions receive the raw pi-ai provider. Keep the same catalog overlay on
+ * every numbered provider and rewrite its models to the slot's provider ID.
+ */
 function createSlotProvider(
   source: Provider<"openai-codex-responses">,
   slot: number,
 ): Provider<"openai-codex-responses"> {
   const id = `${PROVIDER_PREFIX}${slot}`;
+  let dynamicModels: CodexModel[] = [];
+  let inflightRefresh: Promise<void> | undefined;
+
+  const refreshCatalog = async (context: RefreshModelsContextCompat): Promise<void> => {
+    const localLastModified = await localCatalogLastModified(source.id);
+    const stored = await readCatalogStore(context);
+    const restored = restoreSlotCatalog(stored, source.id, id, slot, localLastModified);
+    if (!(await publishCatalog(context, { update: () => { dynamicModels = restored; } }))) return;
+    if (!context.allowNetwork || context.signal?.aborted) return;
+    if (
+      !context.force
+      && stored?.checkedAt !== undefined
+      && stored.lastModified !== undefined
+      && Date.now() - stored.checkedAt < MODEL_CATALOG_REFRESH_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    const validator = stored?.models.length ? stored.etag : undefined;
+    const url = new URL(
+      `/api/models/providers/${encodeURIComponent(source.id)}`,
+      MODEL_CATALOG_BASE_URL,
+    );
+    const response = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        ...(validator ? { "if-none-match": validator } : {}),
+      },
+      ...(context.signal ? { signal: context.signal } : {}),
+    });
+    if (context.signal?.aborted) return;
+
+    const checkedAt = Date.now();
+    if (response.status === 304 && stored) {
+      await publishCatalog(context, { persist: { ...stored, checkedAt } });
+      return;
+    }
+    if (response.status === 404 || response.status === 501) {
+      const { etag: _etag, ...withoutEtag } = stored ?? { models: [] };
+      await publishCatalog(context, {
+        persist: {
+          ...withoutEtag,
+          checkedAt,
+          lastModified: 0,
+        },
+      });
+      return;
+    }
+    if (!response.ok) {
+      await publishCatalog(context, {
+        persist: { ...(stored ?? { models: [] }), checkedAt },
+      });
+      throw new Error(`Model catalog request failed for ${id}: ${response.status}`);
+    }
+
+    const refreshed = parseSlotCatalog(await response.json(), id, slot);
+    const lastModified = Date.parse(response.headers.get("last-modified") ?? "");
+    if (context.signal?.aborted) return;
+    const etag = response.headers.get("etag");
+    const entry: CatalogStoreEntry = {
+      models: refreshed,
+      checkedAt,
+      lastModified: Number.isNaN(lastModified) ? 0 : lastModified,
+      ...(etag !== null ? { etag } : {}),
+    };
+    const published = restoreSlotCatalog(
+      entry,
+      source.id,
+      id,
+      slot,
+      localLastModified,
+    );
+    await publishCatalog(context, {
+      persist: entry,
+      update: () => { dynamicModels = published; },
+    });
+  };
 
   return {
     ...source,
     id,
     name: `OpenAI Codex ${slot}`,
-    getModels: () => source.getModels().map((model) => ({
-      ...model,
-      provider: id,
-      name: `[Codex ${slot}] ${model.name}`,
-    })),
+    getModels: () => mergeCatalogModels(
+      source.getModels().map((model) => slotModel(model, id, slot)),
+      dynamicModels,
+    ),
+    refreshModels: (context: RefreshModelsContext) => {
+      const compatible = context as unknown as RefreshModelsContextCompat;
+      if (typeof compatible.publish === "function") return refreshCatalog(compatible);
+
+      inflightRefresh ??= (async () => {
+        try {
+          await refreshCatalog(compatible);
+        } finally {
+          inflightRefresh = undefined;
+        }
+      })();
+      return inflightRefresh;
+    },
   };
 }
 
@@ -357,7 +592,7 @@ export default function multiCodex(pi: ExtensionAPI) {
     updateFastStatus(ctx);
   }
 
-  const source = builtinProviders().find(
+  const source = builtinProviderCatalog.builtinProviders().find(
     (provider): provider is Provider<"openai-codex-responses"> => provider.id === "openai-codex",
   );
   if (!source) throw new Error("The installed pi-ai version does not provide OpenAI Codex");
