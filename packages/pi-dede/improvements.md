@@ -84,15 +84,13 @@ Completed child usage is returned only on the normal success path. If the parent
 
 **Acceptance:** One sibling succeeds with nonzero usage while another is cancelled: accounting is not silently lost. Inject directory-removal failure and shutdown during allocation; remaining cleanup still runs, footer state clears, and no late capability is added to a closed store. If the host API cannot persist usage for cancelled tools, document that limitation explicitly rather than promising complete accounting.
 
-### 8. Protect invariant CLI arguments instead of accepting any trailing string list
+### 8. Expose trusted child CLI overrides as flag/value configuration
 
-**Evidence:** `src/config.ts`, `parseConfig()`; `src/invocation.ts`, `buildChildInvocation()`; `src/fork-context.ts`, `PROMPT_SURFACE_ARGS`.
+**Decision:** `additionalArgs` is a JSON object mapping flags to boolean or string values. `true` emits a boolean flag, `false` omits it, and a string emits a flag/value pair. This supports extension-defined options such as `"--fast": true` without needing pi-dede to know every extension's CLI surface.
 
-Configuration validates `additionalArgs` only as strings and appends them after all controlled arguments. Session, mode, persistence, approval, and other lifecycle flags can therefore conflict with the runner's assumptions. Fork compatibility uses a separate hand-maintained flag list and does not establish that the final invocation still uses the intended session/transport.
+**Constraints:** Positional prompts and malformed/NUL-containing flags remain rejected. The override map is trusted configuration: it may supersede pi-dede's own trailing CLI options, so the configuration owner is responsible for preserving RPC/session/tool lifecycle behavior. Any override makes auto context selection isolate the child, since prompt/model/tool fidelity cannot be established locally.
 
-**Change:** Centralize argument parsing/validation. Reject flags that override pi-dede-owned transport, session, persistence, or bootstrap invariants, including aliases and `--flag=value` forms. Reject NUL-containing arguments and unexpected positional prompts. Preserve intended extension/provider options and clearly document which prompt/model/tool overrides are supported for isolated children. Use the same parsed representation for fork eligibility.
-
-**Acceptance:** Conflicting mode/session options fail before files or processes are created; approved `-e` options still work. Test missing flag values, aliases, equals syntax, and profile/global precedence. Treat this as trusted-config robustness, not a claim that arbitrary installed extensions can be sandboxed.
+**Acceptance:** Cover extension-defined boolean flags, generic flag/value pairs, equals normalization, profile/global precedence, and invalid object values.
 
 ### 9. Verify fork compatibility beyond active tool names
 

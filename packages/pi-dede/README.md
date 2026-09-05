@@ -248,14 +248,17 @@ Persistent profile model, thinking, and environment overrides—and extra child 
 
 ```json
 {
-  "additionalArgs": ["-e", "/absolute/path/to/child-extension.ts"],
+  "additionalArgs": {
+    "--fast": true,
+    "-e": "/absolute/path/to/child-extension.ts"
+  },
   "context": { "forkMinTokens": 4000, "forkMaxContextRatio": 0.7 },
   "profiles": {
     "scout": {
       "model": "anthropic/claude-haiku-4-5",
       "thinking": "low",
       "env": { "CHILD_MODE": "inspect" },
-      "additionalArgs": ["-e", "/absolute/path/to/scout-extension.ts"]
+      "additionalArgs": { "-e": "/absolute/path/to/scout-extension.ts" }
     },
     "reviewer": { "model": "anthropic/claude-sonnet-4-5", "thinking": "medium" },
     "worker": { "model": "openai-codex/gpt-5.3-codex", "thinking": "medium" },
@@ -266,7 +269,7 @@ Persistent profile model, thinking, and environment overrides—and extra child 
 
 `context.forkMinTokens` is a non-negative integer. `context.forkMaxContextRatio` is greater than zero and at most one. Global values are merged with trusted-project field overrides.
 
-`additionalArgs` is validated and appended after pi-dede's controlled options; the task is sent only through RPC. Supported options are `-e`/`--extension`, matching `--provider`, `--api-key`, `--skill`, `--no-extensions`, `--no-skills`, and `--no-context-files`. Other options, positional prompts and lifecycle overrides are rejected; use typed agent fields for model/thinking/tools/role changes. The top-level list is shared by all profiles. If `profiles.<profile>.additionalArgs` is present, it replaces the shared list for that profile, including when it is an empty array. A trusted project's top-level `additionalArgs` array replaces the global array; profile fields override the corresponding global profile fields.
+`additionalArgs` is a trusted object mapping CLI flags to values. A `true` value emits its flag (for example, `"--fast": true`); `false` omits it; and a non-empty string emits a flag/value pair. Overrides are appended after pi-dede's built-in child options, and the task is still sent only through RPC—positional prompts cannot be configured. Any child CLI flag, including extension-defined flags, is permitted; conflicting lifecycle or model/tool overrides are the configuration owner's responsibility. The top-level object is shared by all profiles. If `profiles.<profile>.additionalArgs` is present, it replaces the shared object for that profile, including when it is `{}`. A trusted project's top-level `additionalArgs` object replaces the global object; profile fields override the corresponding global profile fields. Any configured override makes `auto` use an isolated child because pi-dede cannot verify its effect on fork fidelity.
 
 Project values override global model/thinking fields and merge environment values by variable name. Per-agent values then override configured environment values. For model selection, `auto` and `fork` retain the master model unless `agents[].model` is explicit; profile model defaults apply to explicit `isolated` children. The complete child environment precedence is inherited master process environment, global profile environment, trusted-project profile environment, per-agent environment, then pi-dede's internal control variables.
 

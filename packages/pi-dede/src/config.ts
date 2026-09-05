@@ -41,6 +41,26 @@ function assertKnownKeys(value: Record<string, unknown>, allowed: readonly strin
   if (unknown.length) throw new Error(`${label} contains unknown field${unknown.length === 1 ? "" : "s"}: ${unknown.join(", ")}`);
 }
 
+/** Convert trusted JSON flag/value overrides to the child argv representation. */
+function parseAdditionalArgsConfig(value: unknown, label: string): string[] {
+  if (!isRecord(value)) throw new Error(`${label} must be an object mapping CLI flags to boolean or string values`);
+  const args: string[] = [];
+  for (const [flag, override] of Object.entries(value)) {
+    // Validate keys even when false omits that flag from the final argv.
+    parseAdditionalArgs([flag], `${label}.${flag}`);
+    if (typeof override === "boolean") {
+      if (override) args.push(flag);
+      continue;
+    }
+    if (typeof override !== "string" || !override || override.startsWith("-") || override.includes("\0")) {
+      throw new Error(`${label}.${flag} must be true, false, or a non-empty value that does not begin with "-"`);
+    }
+    args.push(flag, override);
+  }
+  parseAdditionalArgs(args, label);
+  return args;
+}
+
 function parseConfig(content: string, path: string): DedeConfigFile {
   if (Buffer.byteLength(content, "utf8") > MAX_CONFIG_BYTES) {
     throw new Error(`${path} exceeds ${MAX_CONFIG_BYTES} UTF-8 bytes`);
@@ -54,13 +74,9 @@ function parseConfig(content: string, path: string): DedeConfigFile {
   }
   if (!isRecord(parsed)) throw new Error(`${path} must contain a JSON object`);
   assertKnownKeys(parsed, ["profiles", "additionalArgs", "context"], path);
-  if (parsed.additionalArgs !== undefined) {
-    if (!Array.isArray(parsed.additionalArgs)) throw new Error(`${path}.additionalArgs must be an array`);
-    for (const [index, arg] of parsed.additionalArgs.entries()) {
-      if (typeof arg !== "string") throw new Error(`${path}.additionalArgs[${index}] must be a string`);
-    }
-    parseAdditionalArgs(parsed.additionalArgs as string[], `${path}.additionalArgs`);
-  }
+  const additionalArgs = parsed.additionalArgs === undefined
+    ? undefined
+    : parseAdditionalArgsConfig(parsed.additionalArgs, `${path}.additionalArgs`);
   if (parsed.context !== undefined) {
     if (!isRecord(parsed.context)) throw new Error(`${path}.context must be an object`);
     assertKnownKeys(parsed.context, ["forkMinTokens", "forkMaxContextRatio"], `${path}.context`);
@@ -78,7 +94,7 @@ function parseConfig(content: string, path: string): DedeConfigFile {
   }
   if (parsed.profiles === undefined) {
     return {
-      ...(parsed.additionalArgs !== undefined ? { additionalArgs: [...parsed.additionalArgs] } : {}),
+      ...(additionalArgs !== undefined ? { additionalArgs } : {}),
       ...(parsed.context !== undefined ? { context: { ...parsed.context } } : {}),
     };
   }
@@ -102,23 +118,19 @@ function parseConfig(content: string, path: string): DedeConfigFile {
     const env = value.env === undefined
       ? undefined
       : validateChildEnv(value.env, `${path}.profiles.${profile}.env`);
-    if (value.additionalArgs !== undefined) {
-      if (!Array.isArray(value.additionalArgs)) throw new Error(`${path}.profiles.${profile}.additionalArgs must be an array`);
-      for (const [index, arg] of value.additionalArgs.entries()) {
-        if (typeof arg !== "string") throw new Error(`${path}.profiles.${profile}.additionalArgs[${index}] must be a string`);
-      }
-      parseAdditionalArgs(value.additionalArgs as string[], `${path}.profiles.${profile}.additionalArgs`);
-    }
+    const additionalArgs = value.additionalArgs === undefined
+      ? undefined
+      : parseAdditionalArgsConfig(value.additionalArgs, `${path}.profiles.${profile}.additionalArgs`);
     profiles[profile] = {
       ...(typeof value.model === "string" ? { model: value.model.trim() } : {}),
       ...(value.thinking !== undefined ? { thinking: value.thinking as ThinkingLevel } : {}),
       ...(env !== undefined ? { env } : {}),
-      ...(value.additionalArgs !== undefined ? { additionalArgs: [...value.additionalArgs] } : {}),
+      ...(additionalArgs !== undefined ? { additionalArgs } : {}),
     };
   }
   return {
     profiles,
-    ...(parsed.additionalArgs !== undefined ? { additionalArgs: [...parsed.additionalArgs] } : {}),
+    ...(additionalArgs !== undefined ? { additionalArgs } : {}),
     ...(parsed.context !== undefined ? { context: { ...parsed.context } } : {}),
   };
 }

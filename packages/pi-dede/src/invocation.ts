@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { additionalArgv } from "./cli-args.ts";
 import { fileURLToPath } from "node:url";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, resolve } from "node:path";
 import { mergeChildEnv, removeReservedChildEnv } from "./env.ts";
 import type { ResolvedAgent } from "./types.ts";
 
@@ -26,6 +26,12 @@ export function resolvePiExecutable(args: string[]): { command: string; args: st
   if (/^pi(\.exe)?$/.test(executable) && (process.argv[1]?.startsWith("/$bunfs/root/") || !/^(node|bun)(\.exe)?$/.test(executable))) {
     return { command: process.execPath, args };
   }
+  // Extensions may be installed outside Pi's Node module tree. In that case,
+  // use the named Pi launcher already selected by the host's PATH.
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    const candidate = resolve(directory || ".", process.platform === "win32" ? "pi.exe" : "pi");
+    if (existsSync(candidate)) return { command: candidate, args };
+  }
   try {
     const require = createRequire(import.meta.url);
     let directory = dirname(require.resolve("@earendil-works/pi-coding-agent"));
@@ -46,7 +52,7 @@ export function resolvePiExecutable(args: string[]): { command: string; args: st
       directory = parent;
     }
   } catch { /* actionable error below, never relaunch an unrelated SDK host */ }
-  throw new Error("Cannot resolve the installed Pi CLI. Install @earendil-works/pi-coding-agent or set PI_DEDE_EXECUTABLE to an absolute trusted Pi launcher.");
+  throw new Error("Cannot resolve the installed Pi CLI. Add the Pi launcher to PATH, install @earendil-works/pi-coding-agent, or set PI_DEDE_EXECUTABLE to an absolute trusted Pi launcher.");
 }
 
 export interface ChildInvocationOptions {

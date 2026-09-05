@@ -29,12 +29,12 @@ describe("profile default configuration", () => {
   it("loads global defaults and merges trusted project overrides by field", async () => {
     const { cwd, globalPath, projectPath } = await setup();
     await writeFile(globalPath, JSON.stringify({ profiles: {
-      scout: { model: " global/scout ", thinking: "low", env: { GLOBAL_ONLY: "yes", SHARED: "global" }, additionalArgs: ["-e", "/global/scout.ts"] },
+      scout: { model: " global/scout ", thinking: "low", env: { GLOBAL_ONLY: "yes", SHARED: "global" }, additionalArgs: { "-e": "/global/scout.ts" } },
       custom: { thinking: "minimal" },
       reviewer: { model: "global/reviewer", thinking: "medium" },
     } }));
     await writeFile(projectPath, JSON.stringify({ profiles: {
-      scout: { thinking: "high", env: { PROJECT_ONLY: "yes", SHARED: "project" }, additionalArgs: ["-e", "/project/scout.ts"] },
+      scout: { thinking: "high", env: { PROJECT_ONLY: "yes", SHARED: "project" }, additionalArgs: { "-e": "/project/scout.ts" } },
       custom: { model: "project/custom" },
       worker: { model: "project/worker" },
     } }));
@@ -69,8 +69,8 @@ describe("profile default configuration", () => {
 
   it("loads additional child CLI args with trusted project override", async () => {
     const { cwd, globalPath, projectPath } = await setup();
-    await writeFile(globalPath, JSON.stringify({ additionalArgs: ["-e", "/global/ext.ts"] }));
-    await writeFile(projectPath, JSON.stringify({ additionalArgs: ["-e", "/project/ext.ts"] }));
+    await writeFile(globalPath, JSON.stringify({ additionalArgs: { "-e": "/global/ext.ts" } }));
+    await writeFile(projectPath, JSON.stringify({ additionalArgs: { "-e": "/project/ext.ts" } }));
 
     await expect(loadDedeConfig(cwd, true)).resolves.toEqual({
       profiles: {},
@@ -87,10 +87,10 @@ describe("profile default configuration", () => {
   it("supports profile additional child CLI args", async () => {
     const { cwd, globalPath } = await setup();
     await writeFile(globalPath, JSON.stringify({
-      additionalArgs: ["--global-arg"],
+      additionalArgs: { "--global-arg": true },
       profiles: {
-        scout: { additionalArgs: ["-e", "/scout/ext.ts"] },
-        reviewer: { additionalArgs: [] },
+        scout: { additionalArgs: { "-e": "/scout/ext.ts" } },
+        reviewer: { additionalArgs: {} },
       },
     }));
 
@@ -116,16 +116,16 @@ describe("profile default configuration", () => {
     });
   });
 
-  it("validates additional child CLI args", async () => {
+  it("validates additional child CLI flag/value overrides", async () => {
     const { cwd, globalPath } = await setup();
     await writeFile(globalPath, JSON.stringify({ additionalArgs: "-e /tmp/ext.ts" }));
-    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/additionalArgs must be an array/);
+    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/additionalArgs must be an object/);
 
-    await writeFile(globalPath, JSON.stringify({ additionalArgs: ["-e", 42] }));
-    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/additionalArgs\[1\] must be a string/);
+    await writeFile(globalPath, JSON.stringify({ additionalArgs: { "--fast": 42 } }));
+    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/additionalArgs\.--fast must be true, false, or a non-empty value/);
 
-    await writeFile(globalPath, JSON.stringify({ profiles: { scout: { additionalArgs: ["-e", 42] } } }));
-    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/profiles\.scout\.additionalArgs\[1\] must be a string/);
+    await writeFile(globalPath, JSON.stringify({ profiles: { scout: { additionalArgs: { "--fast": "--invalid" } } } }));
+    await expect(loadDedeConfig(cwd, false)).rejects.toThrow(/profiles\.scout\.additionalArgs\.--fast must be true, false, or a non-empty value/);
   });
 
   it("rejects malformed and unknown configuration values with the file path", async () => {
