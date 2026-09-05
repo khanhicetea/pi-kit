@@ -57,7 +57,7 @@ describe("pi-tactician extension", () => {
 		await command.handler("", { sessionManager: { getBranch: () => branch }, ui: { notify } });
 		expect(state.appendEntry).toHaveBeenCalledWith(
 			REPORT_ENTRY_TYPE,
-			expect.objectContaining({ schemaVersion: 2, scope: "task", report: expect.objectContaining({ toolBatches: 1 }) }),
+			expect.objectContaining({ schemaVersion: 2, scope: "session", report: expect.objectContaining({ toolBatches: 1 }) }),
 		);
 		expect(notify).toHaveBeenCalled();
 	});
