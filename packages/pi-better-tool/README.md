@@ -1,20 +1,16 @@
 # pi-better-tool
 
-Better built-in tools for the [pi coding agent](https://github.com/earendil-works/pi-mono) — starting with an `edit` override that turns failed edits into recoverable ones.
+Better built-in tools for the [pi coding agent](https://github.com/earendil-works/pi-mono) — starting with an `edit` override that turns many failed edits into recoverable ones.
 
 ## Why
 
-The built-in `edit` tool requires `edits[].oldText` to match **exactly and uniquely**. When it doesn't, the tool fails with a bare error:
+Pi's built-in `edit` requires every `edits[].oldText` to identify one non-overlapping region. When matching fails, this override returns bounded context that can make the next action safer:
 
-```
-Could not find edits[1] in /code/app.go. The oldText must match exactly including all whitespace and newlines.
-```
+- **Ambiguous literal match after a bounded read** — selects an occurrence only when exactly one tracked literal occurrence is fully contained in the newest verified stored-context `read` of the same file.
+- **Other ambiguous matches** — reports bounded occurrence ranges and whole-line prefix/suffix expansions that are unique under edit matching.
+- **Text not found** — reports a bounded closest-region comparison. It gives direct-retry wording only when the exact candidate is unique, sufficiently similar, and meaningfully better than a distinct runner-up.
 
-That failure wastes a whole loop: the model has to `read` the file again, guess a larger context, and retry — sometimes failing again. `pi-better-tool` resolves only ambiguity supported by verified evidence and otherwise returns **recovery context** so the next call succeeds without re-reading:
-
-- **Ambiguous literal match after a bounded read** — when exactly one occurrence was fully visible in the latest successful, byte-verified `read` of the same file, edit selects that occurrence. Its success message reports the selected/read ranges and up to four remaining occurrences with effective prefix/suffix context and retryable snippets.
-- **Other ambiguous matches (2+ occurrences)** — bounded occurrence line numbers plus the **minimum prefix/suffix context** that makes the first few occurrences unique, rendered as ready-to-use `oldText` snippets when they fit safely.
-- **Text not found** — the closest matching region (fuzzy line similarity), a line-by-line comparison against your `oldText`, the exact file bytes to retry with, and likely causes (tabs vs spaces, indentation, case).
+Low-confidence, competing, stale, oversized, or omitted candidates tell the model to read the referenced range instead of retrying blindly.
 
 ## Install
 
@@ -32,14 +28,14 @@ It is also registered in the root `package.json` under `pi.extensions`.
 
 ## Example: ambiguous oldText
 
-```text
+````text
 Found 2 occurrences of the text in dup.go. The text must be unique. Please provide more context to make it unique.
 
 Occurrences:
   1. lines 2-3
   2. lines 6-7
 
-Retry with a disambiguated oldText: pick ONE occurrence below and reuse its snippet exactly. Each snippet already includes the minimum surrounding context that makes it unique:
+Disambiguated oldText candidates are shown below when they fit safely. A fenced snippet can be reused exactly; an omitted snippet must be read from its referenced range first:
 
 Occurrence 1 (lines 2-3) — minimum context: 0 lines before, 1 line after:
 ```
@@ -49,54 +45,82 @@ Occurrence 1 (lines 2-3) — minimum context: 0 lines before, 1 line after:
 func second() {
 ```
 
-Occurrence 2 (lines 6-7) — minimum context: 0 lines before, 0 lines after:
+Tip: only fenced snippets explicitly presented as retryable should be copied into oldText.
+
+No changes were written — the file was not modified.
+````
+
+## Example: competing closest matches
+
+````text
+Could not find the exact text in handlers.ts. The old text must match exactly including all whitespace and newlines.
+
+Closest match in the file: lines 10-12 (~91% line similarity).
+...
+Candidate file content at lines 10-12 is not safe for a direct retry (a distinct candidate at lines 30-32 has a similar heuristic score (~90%)). Read and verify this range before editing.
 ```
-	log()
+function firstHandler() {
+	work();
 }
 ```
 
-Tip: use the snippet byte-for-byte as the new oldText, and make newText the snippet with your change applied (the snippet may span whole lines).
-
 No changes were written — the file was not modified.
-```
+````
 
-## Example: text not found
+Similarity scores are heuristics, not probabilities.
 
-```text
-Could not find the exact text in tabs.go. The old text must match exactly including all whitespace and newlines.
+## Behavior and compatibility
 
-Closest match in the file: lines 3-5 (~91% line similarity).
-Differences vs your oldText (2 of 3 compared lines match):
-  file line 4 differs from your oldText line 2:
-    file:     →tab→fmt.Println("hi")
-    oldText:      fmt.Println("hi")
+The normal matching path follows Pi's built-in edit implementation:
 
-Exact file content at lines 3-5 — retry using this text as oldText (then apply your change to newText):
-```
-func main() {
-	fmt.Println("hi")
-}
-```
+- exact match first, then fuzzy fallback for trailing whitespace, smart quotes, dashes, Unicode compatibility forms, and Unicode spaces
+- uniqueness checked in fuzzy-normalized space
+- all edits matched against the original content rather than applied incrementally
+- overlap and no-change detection
+- CRLF restoration and UTF-8 BOM preservation
+- built-in-compatible success details (`details.diff`, `details.patch`, and `details.firstChangedLine`)
+- no custom renderers, so Pi's built-in edit renderer is inherited
 
-Possible cause:
-- whitespace mismatch: the text matches when ALL whitespace is removed — check tabs vs spaces and indentation width
+Intentional safety/compatibility differences are:
 
-No changes were written — the file was not modified.
-```
+- 1–100 edits are accepted per call; empty batches are rejected by the public schema
+- empty and fuzzy-normalized-empty `oldText` values are rejected
+- invalid UTF-8 and NUL-containing files are rejected rather than silently transcoded
+- conservative stored-read-based selection may resolve repeated literal text
+- self-overlapping string occurrences retain Pi's non-overlapping counting policy
 
-## Behavior
+The argument compatibility shim accepts `edits` as an array, JSON string, single edit object, or legacy top-level `oldText`/`newText`. Preparation is pure and idempotent.
 
-Normal unique-match semantics are **identical** to the built-in `edit` tool. The one intentional extension is conservative read-based selection for repeated literal text:
+### Read-evidence boundary
 
-- same schema (`path` + `edits[{oldText,newText}]`), including the compatibility shim for models that send `edits` as a JSON string, a single edit object, or legacy top-level `oldText`/`newText`
-- same matching engine ported from pi's `edit-diff.ts`: exact match first, fuzzy fallback (trailing whitespace, smart quotes, dashes, unicode spaces), uniqueness checked in fuzzy-normalized space, all edits matched against the original content, overlap/empty/no-change detection
-- same BOM and CRLF handling
-- same success result shape (`details.diff` / `details.patch` / `details.firstChangedLine`), and no custom renderers — the built-in diff renderer is inherited
-- read-based selection fails closed unless the newest same-file read is still in active context, its stored output exactly matches the current bytes and built-in read formatting, and exactly one complete literal occurrence lies inside the visible range; fuzzy/Unicode-equivalent ambiguity, same-line ambiguity, stale reads, and broad reads containing multiple occurrences still refuse
+Read evidence is taken from Pi's active, compaction-aware **stored session context**. Retained-tail messages are handled when the host exposes them. The newest same-file read must have a matching successful result and reproduce built-in read formatting for the current LF-normalized content. Missing, failed, malformed, or stale newest evidence blocks fallback to older intent.
 
-Failure behavior is the other difference: errors carry the recovery context described above, and nothing is written on failure (edits remain atomic).
+This is not proof of the final provider payload: another extension may remove messages in a `context` hook or rewrite the provider request. CRLF read output is intentionally compared after LF normalization, so this guarantee is content/format verification rather than literal byte identity. BOM-bearing read output is conservatively rejected because edit matching strips the BOM. Fuzzy/Unicode-equivalent ambiguity and highly repetitive files also fail closed.
 
-Diagnostics degrade gracefully: files over ~2 MB skip the analysis and return the plain built-in-style error; repeated blocks that cannot be disambiguated within 12 context lines get a guidance note instead of snippets. Complete diagnostic output is bounded below pi's 50 KB / 2,000-line tool-output limit. Oversized exact snippets are omitted with a line range instead of being presented as copyable text, and low-confidence or non-unique closest matches require verification before retrying.
+### Local filesystem and commit guarantees
+
+This override uses local Node.js filesystem operations. It does **not** inherit an SSH, container, sandbox, or other custom edit backend.
+
+All replacements are analyzed before writing, so a matching/overlap/no-change/diagnostic failure starts no write. Immediately before writing, the tool performs a best-effort content and file-identity recheck to catch many external modifications.
+
+The final write is still an in-place filesystem overwrite:
+
+- it is not a cross-process lock or race-free compare-and-swap
+- it is not rollback- or crash-safe filesystem atomicity
+- another process can modify the file after the pre-write check
+- a rejected write may leave the file unchanged, partially written, or fully written; inspect it before retrying
+
+A resolved write is the tool's commit boundary. The extension returns the committed result rather than throwing a post-write cancellation error. A host may still suppress result delivery when cancelling the surrounding tool run; cancellation cannot roll back a completed filesystem write. Temporary-file/rename replacement is deliberately not used because it can replace symlinks, break hard-link semantics, or alter metadata without a carefully defined cross-platform policy.
+
+### Output and resource bounds
+
+Diagnostic text is kept below Pi's 50 KB / 2,000-line tool-output limits. Markdown snippets are added atomically so a fence is never cut; oversized snippets are omitted with read guidance. Success expansion is skipped for oversized files. Closest-match work has explicit query, line, and operation budgets and falls back to concise read guidance when exhausted.
+
+`details.diff` and `details.patch` remain complete for renderer compatibility and are not blindly truncated as diagnostic text.
+
+## Host compatibility
+
+Pi's packaging guidance requires wildcard peer dependencies for Pi core packages. This package follows that guidance rather than bundling Pi. Version 0.2.1 is typechecked and tested against `@earendil-works/pi-coding-agent` 0.82.1; host upgrades should run the read-format, exported-helper, renderer-shape, and session-context compatibility tests.
 
 ## Development
 
@@ -107,15 +131,13 @@ npm test          # vitest only
 
 ## Publishing
 
-From the repository root, verify the package and inspect its tarball before publishing:
+From the repository root:
 
 ```bash
 npm run check --workspace=@khanhicetea/pi-better-tool
 npm pack --dry-run --workspace=@khanhicetea/pi-better-tool
 npm publish --workspace=@khanhicetea/pi-better-tool
 ```
-
-The package is configured for public publishing under the `@khanhicetea` scope. npm authentication is required.
 
 ## License
 

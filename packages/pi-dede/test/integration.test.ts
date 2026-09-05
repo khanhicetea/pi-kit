@@ -1,3 +1,4 @@
+import { toolSurfaceFixture } from "./tool-surface-fixture.ts";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,10 +8,11 @@ import dedeExtension from "../src/index.ts";
 import { ArtifactManager, ChildProcessManager, runChild } from "../src/runner.ts";
 import type { ResolvedAgent } from "../src/types.ts";
 
-const originalScript = process.argv[1];
+const originalExecutable = process.env.PI_DEDE_EXECUTABLE;
 
 afterEach(() => {
-  process.argv[1] = originalScript;
+  if (originalExecutable === undefined) delete process.env.PI_DEDE_EXECUTABLE;
+  else process.env.PI_DEDE_EXECUTABLE = originalExecutable;
   delete process.env.DEDE_TEST_LOG;
 });
 
@@ -88,13 +90,14 @@ describe("fake Pi integration", () => {
     master.appendMessage({ role: "user", content: "Run the delegation", timestamp: Date.now() });
     master.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "fork-call", name: "dede_delegate", arguments: {} }], api: "openai-responses", provider: "fake", model: "model", usage, stopReason: "toolUse", timestamp: Date.now() });
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     process.env.DEDE_TEST_LOG = logPath;
     let tool: any;
     let shutdown: any;
     dedeExtension({
       registerTool(value: any) { tool = value; },
       getActiveTools() { return ["read", "grep", "find", "ls", "write", "dede_delegate"]; },
+      getAllTools() { return toolSurfaceFixture(directory); },
       on(event: string, handler: any) { if (event === "session_shutdown") shutdown = handler; },
     } as unknown as ExtensionAPI);
     const ctx = {
@@ -167,7 +170,7 @@ describe("fake Pi integration", () => {
       }
     `);
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     process.env.DEDE_TEST_LOG = logPath;
     let tool: any;
     let shutdown: any;
@@ -261,7 +264,7 @@ describe("fake Pi integration", () => {
       }
     `);
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     process.env.DEDE_TEST_LOG = logPath;
     let tool: any;
     let shutdown: any;
@@ -333,7 +336,7 @@ describe("fake Pi integration", () => {
       }
     `);
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     process.env.DEDE_TEST_LOG = logPath;
     let tool: any;
     let shutdown: any;
@@ -423,7 +426,7 @@ describe("fake Pi integration", () => {
       }
     `);
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     let tool: any;
     let shutdown: any;
     dedeExtension({
@@ -506,7 +509,7 @@ describe("fake Pi integration", () => {
     // Bare hang: never reads stdin, never settles.
     await writeFile(fake, "setInterval(() => undefined, 1000);\n");
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     const manager = new ChildProcessManager();
     const artifacts = new ArtifactManager("timeout-session");
     try {
@@ -561,7 +564,7 @@ describe("fake Pi integration", () => {
       }
     `);
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     const manager = new ChildProcessManager();
     const artifacts = new ArtifactManager("test-session");
     try {
@@ -623,7 +626,7 @@ describe("fake Pi integration", () => {
       }
     `);
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     process.env.DEDE_STEER_LOG = steerLog;
     const manager = new ChildProcessManager();
     const artifacts = new ArtifactManager("steer-session");
@@ -692,7 +695,7 @@ describe("fake Pi integration", () => {
       }
     `);
 
-    process.argv[1] = fake;
+    process.env.PI_DEDE_EXECUTABLE = fake;
     process.env.DEDE_UI_LOG = uiLog;
     const manager = new ChildProcessManager();
     const artifacts = new ArtifactManager("ui-session");

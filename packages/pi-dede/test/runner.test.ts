@@ -1,6 +1,6 @@
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { createSecureRunDirectory, removeRunDirectory, truncateUtf8, writeSecurePrompt } from "../src/runner.ts";
+import { ArtifactManager, createSecureRunDirectory, removeRunDirectory, truncateUtf8, writeSecurePrompt } from "../src/runner.ts";
 
 describe("runner utilities", () => {
   it("creates mode-0700 directories and mode-0600 prompt files", async () => {
@@ -13,6 +13,20 @@ describe("runner utilities", () => {
       await removeRunDirectory(directory);
     }
     await expect(stat(directory)).rejects.toThrow();
+  });
+
+  it("shares artifact initialization and drains writes during cleanup", async () => {
+    const artifacts = new ArtifactManager("parallel");
+    const writes = [artifacts.write("run", "one", "first"), artifacts.write("run", "two", "second")];
+    const paths = await Promise.all(writes);
+    expect(paths[0].slice(0, paths[0].lastIndexOf("/"))).toBe(paths[1].slice(0, paths[1].lastIndexOf("/")));
+    expect(await readFile(paths[0], "utf8")).toBe("first");
+    const pending = artifacts.write("run", "three", "third");
+    const cleanup = artifacts.cleanup();
+    const third = await pending;
+    await cleanup;
+    for (const path of [...paths, third]) await expect(stat(path)).rejects.toThrow();
+    await expect(artifacts.write("run", "late", "no")).rejects.toThrow(/shut down/);
   });
 
   it("truncates on UTF-8 boundaries", () => {

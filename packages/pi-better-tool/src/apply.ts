@@ -1,12 +1,12 @@
 /**
  * Edit matching and application engine.
  *
- * A port of pi's built-in `applyEditsToNormalizedContent` with one key
- * difference: instead of throwing opaque errors, `analyzeEdits` returns a
- * structured failure describing *why* an edit failed, which the diagnostics
- * layer turns into actionable recovery context for the model.
+ * A port of pi's built-in `applyEditsToNormalizedContent`. Instead of throwing
+ * opaque errors, `analyzeEdits` returns a structured failure describing *why*
+ * an edit failed. It also rejects fuzzy-normalized-empty needles and can accept
+ * a conservatively verified literal selection as intentional safety extensions.
  *
- * Matching semantics are kept identical to the built-in tool:
+ * Otherwise matching semantics follow the built-in tool:
  * - exact match first, then fuzzy-normalized fallback (trailing whitespace,
  *   smart quotes, dashes, unicode spaces)
  * - uniqueness is always checked in fully fuzzy-normalized space
@@ -18,10 +18,11 @@ import {
 	countFuzzyOccurrences,
 	findAllOccurrences,
 	getLineSpans,
+	getLogicalLineSpans,
 	lineAt,
 	normalizeForFuzzyMatch,
 	normalizeToLF,
-	splitLinesWithEndings,
+	splitLogicalLinesWithEndings,
 	type LineSpan,
 } from "./text.ts";
 
@@ -42,7 +43,9 @@ export type EditFailure =
 	| {
 			kind: "ambiguous";
 			editIndex: number;
-			/** Offsets of every occurrence, enumerated in fully fuzzy-normalized space. */
+			/** Total non-overlapping occurrences in fully fuzzy-normalized space. */
+			occurrenceCount: number;
+			/** A bounded prefix of occurrence offsets for diagnostics/selection. */
 			occurrenceOffsets: number[];
 	  }
 	| {
@@ -84,6 +87,9 @@ export interface AnalyzeOptions {
 	 */
 	ambiguousSelections?: ReadonlyMap<number, number>;
 }
+
+/** Avoid materializing unbounded offset arrays for highly repetitive files. */
+const MAX_TRACKED_OCCURRENCE_OFFSETS = 256;
 
 export function normalizeEdits(edits: EditOp[]): EditOp[] {
 	return edits.map((edit) => ({
@@ -159,7 +165,11 @@ export function analyzeEdits(normalizedContent: string, rawEdits: EditOp[], opti
 		const occurrences = countFuzzyOccurrences(fuzzyBase, edit.oldText);
 		let selectedMatch = matchResult;
 		if (occurrences > 1) {
-			const occurrenceOffsets = findAllOccurrences(fuzzyBase, normalizeForFuzzyMatch(edit.oldText));
+			const occurrenceOffsets = findAllOccurrences(
+				fuzzyBase,
+				normalizeForFuzzyMatch(edit.oldText),
+				MAX_TRACKED_OCCURRENCE_OFFSETS,
+			);
 			const selectedOffset = options.ambiguousSelections?.get(i);
 			if (
 				selectedOffset === undefined ||
@@ -167,7 +177,7 @@ export function analyzeEdits(normalizedContent: string, rawEdits: EditOp[], opti
 			) {
 				return {
 					ok: false,
-					failure: { kind: "ambiguous", editIndex: i, occurrenceOffsets },
+					failure: { kind: "ambiguous", editIndex: i, occurrenceCount: occurrences, occurrenceOffsets },
 				};
 			}
 			selectedMatch = {
@@ -257,10 +267,10 @@ function applyReplacementsPreservingUnchangedLines(
 	baseContent: string,
 	replacements: Replacement[],
 ): string {
-	const originalLines = splitLinesWithEndings(originalContent);
-	const baseLines = getLineSpans(baseContent);
+	const originalLines = splitLogicalLinesWithEndings(originalContent);
+	const baseLines = getLogicalLineSpans(baseContent);
 	if (originalLines.length !== baseLines.length) {
-		throw new Error("Cannot preserve unchanged lines because the base content has a different line count.");
+		throw new Error("Cannot preserve unchanged lines because the base content has a different logical line count.");
 	}
 
 	const groups: Array<InternalLineWindow & { replacements: Replacement[] }> = [];

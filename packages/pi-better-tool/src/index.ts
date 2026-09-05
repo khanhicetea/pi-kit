@@ -11,7 +11,12 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerBetterEditTool } from "./tool.ts";
 
 export { registerBetterEditTool, executeBetterEdit, prepareEditArguments, betterEditSchema } from "./tool.ts";
-export type { BetterEditInput } from "./tool.ts";
+export type {
+	BetterEditExecutionOptions,
+	BetterEditInput,
+	BetterEditOperations,
+	BetterEditSuccess,
+} from "./tool.ts";
 export {
 	formatAutoDisambiguationSuccess,
 	formatEditFailure,

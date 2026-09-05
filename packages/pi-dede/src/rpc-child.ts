@@ -45,6 +45,8 @@ export class RpcChild {
   private readonly collector: PiJsonCollector;
   private stdinQueue: Promise<void> = Promise.resolve();
   private settled = false;
+  private closing = false;
+  firstEventAt?: number;
   private exited = false;
   private resolved = false;
   private exitCode: number | undefined;
@@ -59,7 +61,7 @@ export class RpcChild {
   constructor(options: RpcChildOptions) {
     this.collector = new PiJsonCollector(
       (text) => options.onProgress?.(text, this.collector.snapshot()),
-      (event) => this.handleEvent(event),
+      (event) => { this.firstEventAt ??= Date.now(); this.handleEvent(event); },
     );
 
     this.process = spawn(options.invocation.command, options.invocation.args, {
@@ -70,7 +72,10 @@ export class RpcChild {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    this.process.stdout?.on("data", (chunk: Buffer) => this.collector.push(chunk));
+    this.process.stdout?.on("data", (chunk: Buffer) => {
+      try { this.collector.push(chunk); }
+      catch (error) { this.transportFailure(error); }
+    });
     this.process.stderr?.on("data", (chunk: Buffer) => options.onStderr?.(chunk));
     this.process.stdin?.on("error", () => {
       /* child gone; ignore EPIPE so a late steer/abort cannot throw */
@@ -86,16 +91,33 @@ export class RpcChild {
     this.process.once("close", (code) => {
       this.exitCode = code ?? undefined;
       this.exited = true;
-      this.collector.end();
+      try { this.collector.end(); } catch (error) { this.transportFailure(error); }
       this.resolveClosed();
       this.finish();
     });
     this.process.once("error", (error) => {
       this.spawnError = error.message;
-      this.exited = true;
-      this.resolveClosed();
+      // An error after spawn is not evidence that the process/group exited.
+      if (!this.process.pid) {
+        this.exited = true;
+        this.resolveClosed();
+      }
       this.finish();
     });
+  }
+
+  private transportFailure(error: unknown): void {
+    this.spawnError = `RPC observer/transport failure: ${error instanceof Error ? error.message : String(error)}`;
+    this.finish();
+  }
+
+  /** Stop retaining stream listeners after bounded disposal, even if close never arrives. */
+  detachOutput(): void {
+    this.process.stdout?.removeAllListeners("data");
+    this.process.stderr?.removeAllListeners("data");
+    this.process.stdout?.destroy();
+    this.process.stderr?.destroy();
+    this.process.stdin?.destroy();
   }
 
   /** Current event-stream state (a snapshot copy). */
@@ -125,6 +147,7 @@ export class RpcChild {
 
   /** Close stdin; a well-behaved RPC child exits cleanly on EOF. */
   close(): void {
+    this.closing = true;
     try {
       this.process.stdin?.end();
     } catch {
@@ -136,7 +159,7 @@ export class RpcChild {
     this.stdinQueue = this.stdinQueue.then(
       () => {
         const stdin = this.process.stdin;
-        if (!stdin || stdin.destroyed || this.exited) return;
+        if (!stdin || stdin.destroyed || stdin.writableEnded || this.exited || this.closing) return;
         try {
           stdin.write(`${JSON.stringify(command)}\n`);
         } catch {
@@ -151,7 +174,7 @@ export class RpcChild {
   private handleEvent(event: Record<string, any>): void {
     switch (event.type) {
       case "response":
-        if (event.command === "prompt" && event.success === false) {
+        if (event.id === "dede-task" && event.command === "prompt" && event.success === false) {
           this.promptError = typeof event.error === "string" && event.error.length > 0
             ? event.error
             : "Child rejected the prompt";
@@ -171,7 +194,7 @@ export class RpcChild {
   }
 
   private finish(): void {
-    if (this.resolved || !(this.settled || this.exited)) return;
+    if (this.resolved || !(this.settled || this.exited || this.promptError || this.spawnError)) return;
     this.resolved = true;
     this.settle({
       settled: this.settled,

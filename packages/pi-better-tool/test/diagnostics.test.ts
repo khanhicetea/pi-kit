@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { fenceFor, findMinimalUniqueExpansion, formatEditFailure } from "../src/diagnostics.ts";
+import {
+	fenceFor,
+	findMinimalUniqueExpansion,
+	formatAutoDisambiguationSuccess,
+	formatEditFailure,
+} from "../src/diagnostics.ts";
 import type { EditOp } from "../src/apply.ts";
 import { analyzeEdits } from "../src/apply.ts";
 import { findClosestRegion, lineSimilarity, probeMatchCauses } from "../src/similarity.ts";
@@ -81,6 +86,13 @@ describe("findClosestRegion", () => {
 		// Generous enough for slow CI, but catches the previous O(N*L^2)
 		// implementation, which took over a minute for this fixture.
 		expect(performance.now() - started).toBeLessThan(5_000);
+	});
+
+	it("fails closed under query and per-line work limits", () => {
+		const started = performance.now();
+		expect(findClosestRegion(`${"a".repeat(20_000)}X`, `${"a".repeat(20_000)}Y`)).toBeNull();
+		expect(findClosestRegion("short\n", "q".repeat(140 * 1024))).toBeNull();
+		expect(performance.now() - started).toBeLessThan(1_000);
 	});
 });
 
@@ -186,7 +198,8 @@ describe("formatEditFailure", () => {
 			});
 			expect(message).toContain("Could not find the exact text");
 			expect(message).toContain("Closest match in the file: lines 1-3");
-			expect(message).toContain("Exact file content at lines 1-3");
+			expect(message).toContain("Candidate file content at lines 1-3");
+			expect(message).toContain("distinct candidate at lines 5-7");
 			expect(message).toContain("func a() {");
 		}
 	});
@@ -224,7 +237,7 @@ describe("formatEditFailure", () => {
 			failure: { kind: "empty-old-text", editIndex: 0 },
 		});
 		expect(Buffer.byteLength(message, "utf8")).toBeLessThan(50 * 1024);
-		expect(message).toContain("Diagnostic output truncated");
+		expect(message).toContain("Diagnostic output was bounded");
 	});
 
 	it("bounds huge single-line snippets below pi's output limit", () => {
@@ -235,8 +248,50 @@ describe("formatEditFailure", () => {
 		if (!result.ok) {
 			const message = formatEditFailure({ path: "huge.txt", normalizedContent: content, edits: badEdits, failure: result.failure });
 			expect(Buffer.byteLength(message, "utf8")).toBeLessThan(50 * 1024);
-			expect(message).toContain("exceeds the safe output limit");
+			expect(message).toContain("No reliable similar region was found within the bounded diagnostic search");
 		}
+	});
+
+	it("requires verification when a distinct candidate has an equal score", () => {
+		const content = "const target = chooseA;\nseparator\nconst target = chooseB;\n";
+		const badEdits: EditOp[] = [{ oldText: "const target = chooseC;", newText: "x" }];
+		const result = analyzeEdits(content, badEdits);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			const message = formatEditFailure({ path: "tie.ts", normalizedContent: content, edits: badEdits, failure: result.failure });
+			expect(message).toContain("distinct candidate");
+			expect(message).toContain("not safe for a direct retry");
+			expect(message).not.toContain("Exact file content at");
+		}
+	});
+
+	it("renders comparisons from original text rather than fuzzy-normalized text", () => {
+		const content = "const label = “smart”;  \n";
+		const badEdits: EditOp[] = [{ oldText: "const label = \"smert\";", newText: "x" }];
+		const result = analyzeEdits(content, badEdits);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			const message = formatEditFailure({ path: "unicode.ts", normalizedContent: content, edits: badEdits, failure: result.failure });
+			expect(message).toContain("“smart”");
+			expect(message).toContain("··");
+			expect(message).toContain("\"smert\"");
+		}
+	});
+
+	it("bounds complete success output without cutting Markdown fences", () => {
+		const ticks = "`".repeat(2_480);
+		const content = Array.from({ length: 5 }, (_, index) => `${ticks}TARGET-${index}`).join("\n");
+		const resolutions = Array.from({ length: 4 }, (_, editIndex) => ({
+			editIndex,
+			oldText: "TARGET",
+			chosenRange: { start: 1, end: 1 },
+			readRange: { start: 1, end: 1 },
+		}));
+		const message = formatAutoDisambiguationSuccess("ok", content, resolutions);
+		expect(Buffer.byteLength(message, "utf8")).toBeLessThan(50 * 1024);
+		const fenceLines = message.split("\n").filter((line) => /^`{3,}$/.test(line));
+		expect(fenceLines.length % 2).toBe(0);
+		expect(message).toContain("Diagnostic output was bounded");
 	});
 
 	it("renders overlap with line ranges", () => {

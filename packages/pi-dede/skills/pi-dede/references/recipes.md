@@ -2,6 +2,51 @@
 
 Use these as shapes, not scripts. Replace every placeholder with evidence from the master's own inspection.
 
+## Direct tools versus short reasoning tasks
+
+A known read, grep, or single authorized command belongs in the master's direct tools. Batch grounded independent calls; do not hire a child merely to relay an exit code.
+
+For bounded multi-step interpretation, explicitly isolate a configured cheaper profile. Omit `model` to use that profile default. A 60-second execution ceiling is illustrative, not a total-return or cache-retention guarantee.
+
+### Failure classification (read-only)
+
+```json
+{
+  "objective": "Identify the owner of one existing failure family",
+  "sharedContext": "Verified log: <log path>; relevant source/test paths: <paths>; trusted constraints: <rules>.",
+  "agents": [{
+    "id": "classify",
+    "profile": "scout",
+    "contextMode": "isolated",
+    "thinking": "low",
+    "timeoutSeconds": 60,
+    "goal": "Classify only <failure family> in the named existing log and paths. Return 100–200 words: verdict, decisive line citations, likely owning symbol, material uncertainty and unfinished work. Inconclusive is valid. No reruns, edits or broad exploration; stop when this classification is supported."
+  }]
+}
+```
+
+### Focused validation (sole writer lease)
+
+Use this only when interpretation or several bounded steps save master reasoning rounds. Wait for the approved mutation to finish first. The command must be explicitly authorized by the user; never use this recipe when tests/scripts are forbidden.
+
+```json
+{
+  "objective": "Determine whether the completed approved patch satisfies one check",
+  "sharedContext": "Completed patch scope: <paths>; exact authorized command: <command>; no installs, fixes, reruns or suite expansion.",
+  "agents": [{
+    "id": "validate",
+    "profile": "custom",
+    "contextMode": "isolated",
+    "tools": ["bash"],
+    "thinking": "low",
+    "timeoutSeconds": 60,
+    "goal": "Execute the supplied exact command once against the completed patch, interpret the result, and stop. Return 100–200 words with command, exit status, decisive evidence, uncertainty and unfinished work. Keep full logs in an authorized retrievable artifact. No fixes, installs or automatic reruns."
+  }]
+}
+```
+
+Bash is mutation-capable even for validation. Never put this child alongside another writer. For evidence needing substantial prior history, use compatible same-model auto/fork instead; compare total expected cost, latency and repair risk rather than cache percentage.
+
 ## Parallel evidence
 
 Use two lanes by default; add a third only for a genuinely separate decision input.

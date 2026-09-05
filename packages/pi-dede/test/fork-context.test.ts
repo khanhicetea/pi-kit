@@ -1,3 +1,4 @@
+import { toolSurfaceFixture } from "./tool-surface-fixture.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,12 +80,13 @@ describe("master context forking", () => {
   it("selects the entry before the unresolved delegation call and forks only that safe branch", async () => {
     const { directory, manager, currentUserId } = await masterSession();
     const ctx = {
+      cwd: directory,
       sessionManager: manager,
       model: { provider: "test", id: "main" },
       getSystemPrompt: () => "exact master system",
       getContextUsage: () => ({ tokens: 8000, contextWindow: 20000, percent: 40 }),
     } as any;
-    const snapshot = captureMasterForkSnapshot(ctx, "call-dede", ["read", "grep", "find", "ls", "write", "dede_delegate"]);
+    const snapshot = captureMasterForkSnapshot(ctx, "call-dede", ["read", "grep", "find", "ls", "write", "dede_delegate"], toolSurfaceFixture(directory));
     expect(snapshot).toMatchObject({ entryId: currentUserId, contextTokens: 8000, model: "test/main" });
 
     const resolved = resolveAgentContext(agent, snapshot, config);
@@ -120,6 +122,7 @@ describe("master context forking", () => {
       sessionPath: manager.getSessionFile()!,
       entryId: manager.getEntries()[0].id,
       systemPrompt: "system",
+      surfaceFingerprint: "verified-test-surface",
       activeTools: ["read", "grep", "find", "ls"],
       model: "test/main",
     };

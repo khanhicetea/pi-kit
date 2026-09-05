@@ -82,6 +82,10 @@ describe("profile prompts", () => {
     expect(prompt).toContain("bounded delegated scout");
     expect(prompt).toContain("Only use tools from this allowed set: read, grep, find, ls");
     expect(prompt).toContain("blocked at runtime");
+    expect(prompt).toContain("at most five direct bullets");
+    expect(prompt).toContain("at most eight concise bullets");
+    expect(prompt).toContain("already-grounded independent tool calls together");
+    expect(prompt).toContain("Inconclusive is a valid verdict");
     expect(prompt).not.toContain("master system");
   });
 

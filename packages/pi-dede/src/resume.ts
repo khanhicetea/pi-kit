@@ -23,6 +23,7 @@ function cloneAgent(agent: ResolvedAgent): ResolvedAgent {
   return {
     ...agent,
     tools: [...agent.tools],
+    additionalArgs: [...agent.additionalArgs],
     visibleTools: agent.visibleTools ? [...agent.visibleTools] : undefined,
     forkedFrom: agent.forkedFrom ? { ...agent.forkedFrom } : undefined,
     env: { ...agent.env },
@@ -100,6 +101,9 @@ export class ChildResumeStore {
   }
 
   private store(agent: ResolvedAgent, sessionId: string, directory: string, sessionPath: string): ChildLineageLease {
+    // Persistent session files intentionally remain inspectable, but shutdown must
+    // never publish a capability from an allocator that crossed an await.
+    if (this.closed) throw new Error(`Child lineage store shut down during allocation; inspect ${sessionPath}`);
     const handle = `dede_${randomUUID()}`;
     const record: StoredLineage = {
       handle,

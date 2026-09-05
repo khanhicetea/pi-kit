@@ -71,9 +71,30 @@ export function splitLinesWithEndings(content: string): string[] {
 	return content.match(/[^\n]*\n|[^\n]+/g) ?? [];
 }
 
+/**
+ * Split every logical line while retaining endings. Unlike
+ * splitLinesWithEndings(), this includes the zero-length logical line after a
+ * terminal newline. That distinction is needed when fuzzy normalization turns
+ * a whitespace-only final line into an empty line.
+ */
+export function splitLogicalLinesWithEndings(content: string): string[] {
+	const parts = content.split("\n");
+	return parts.map((part, index) => (index < parts.length - 1 ? `${part}\n` : part));
+}
+
 export function getLineSpans(content: string): LineSpan[] {
 	let offset = 0;
 	return splitLinesWithEndings(content).map((line) => {
+		const span = { start: offset, end: offset + line.length };
+		offset = span.end;
+		return span;
+	});
+}
+
+/** Logical spans, including a possible zero-length final line. */
+export function getLogicalLineSpans(content: string): LineSpan[] {
+	let offset = 0;
+	return splitLogicalLinesWithEndings(content).map((line) => {
 		const span = { start: offset, end: offset + line.length };
 		offset = span.end;
 		return span;
@@ -102,17 +123,25 @@ export function lineAt(spans: LineSpan[], offset: number): number {
  * same normalization the matching engine uses for its uniqueness check.
  * `fuzzyContent` must already be `normalizeForFuzzyMatch`-ed.
  */
-export function countFuzzyOccurrences(fuzzyContent: string, needle: string): number {
-	if (!needle) return 0;
-	return fuzzyContent.split(normalizeForFuzzyMatch(needle)).length - 1;
+export function countFuzzyOccurrences(fuzzyContent: string, needle: string, stopAfter = Number.POSITIVE_INFINITY): number {
+	const normalizedNeedle = normalizeForFuzzyMatch(needle);
+	if (!normalizedNeedle) return 0;
+	let count = 0;
+	let index = fuzzyContent.indexOf(normalizedNeedle);
+	while (index !== -1) {
+		count++;
+		if (count >= stopAfter) return count;
+		index = fuzzyContent.indexOf(normalizedNeedle, index + normalizedNeedle.length);
+	}
+	return count;
 }
 
-/** All start offsets of `needle` in `haystack` (literal string search). */
-export function findAllOccurrences(haystack: string, needle: string): number[] {
+/** All non-overlapping start offsets of `needle`, optionally bounded. */
+export function findAllOccurrences(haystack: string, needle: string, limit = Number.POSITIVE_INFINITY): number[] {
 	const offsets: number[] = [];
-	if (!needle) return offsets;
+	if (!needle || limit <= 0) return offsets;
 	let idx = haystack.indexOf(needle);
-	while (idx !== -1) {
+	while (idx !== -1 && offsets.length < limit) {
 		offsets.push(idx);
 		idx = haystack.indexOf(needle, idx + needle.length);
 	}

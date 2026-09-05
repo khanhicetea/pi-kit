@@ -5,6 +5,8 @@ export const DEDE_TOOL_DESCRIPTION = "After the master has inspected enough to d
 export const DEDE_TOOL_PROMPT_SNIPPET = "Fork or isolate bounded evidence, run one approved worker, continue a related finished child, or briefly resume a timed-out child";
 
 export const DEDE_TOOL_GUIDELINES = [
+  "Choose direct tools for a known read/grep/command; choose an explicitly isolated, configured cheaper profile for a bounded multi-step reasoning task; choose same-model auto/fork when substantial inherited reasoning is needed. Compare setup, child tokens/cache/output, handoff, verification, likely repair, and critical-path latency—not cache hits alone. Do not add a routing model call or automatic escalation.",
+  "For selected dede_delegate microtasks, use a 60-second execution ceiling, adequate low thinking, a 100–200-word evidence target, and an explicit stop condition. Queue/setup/disposal add time. Group similar-duration siblings; do not add a slow lane just to fill slots. Parent cache retention is provider-dependent, never guaranteed.",
   "Use dede_delegate only after the master has inspected enough to name the exact uncertainty, source seam, expected evidence, and stop condition for every child.",
   "Do not use dede_delegate for first-pass repository orientation, a single file or symbol lookup, planning, synthesis, or work the master can likely finish in about two local tool calls.",
   "Before parallel dede_delegate fanout, compare the goals: each child must own a genuinely independent lane with a distinct question and evidence target; do not send cloned prompts with only labels, issue numbers, or broad paths swapped.",

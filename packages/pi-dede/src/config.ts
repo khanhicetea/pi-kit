@@ -1,3 +1,4 @@
+import { parseAdditionalArgs } from "./cli-args.ts";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -58,6 +59,7 @@ function parseConfig(content: string, path: string): DedeConfigFile {
     for (const [index, arg] of parsed.additionalArgs.entries()) {
       if (typeof arg !== "string") throw new Error(`${path}.additionalArgs[${index}] must be a string`);
     }
+    parseAdditionalArgs(parsed.additionalArgs as string[], `${path}.additionalArgs`);
   }
   if (parsed.context !== undefined) {
     if (!isRecord(parsed.context)) throw new Error(`${path}.context must be an object`);
@@ -105,6 +107,7 @@ function parseConfig(content: string, path: string): DedeConfigFile {
       for (const [index, arg] of value.additionalArgs.entries()) {
         if (typeof arg !== "string") throw new Error(`${path}.profiles.${profile}.additionalArgs[${index}] must be a string`);
       }
+      parseAdditionalArgs(value.additionalArgs as string[], `${path}.profiles.${profile}.additionalArgs`);
     }
     profiles[profile] = {
       ...(typeof value.model === "string" ? { model: value.model.trim() } : {}),

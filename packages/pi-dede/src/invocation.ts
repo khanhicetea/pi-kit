@@ -1,6 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { additionalArgv } from "./cli-args.ts";
 import { fileURLToPath } from "node:url";
-import { basename } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { mergeChildEnv, removeReservedChildEnv } from "./env.ts";
 import type { ResolvedAgent } from "./types.ts";
 
@@ -11,15 +13,40 @@ export interface PiInvocation {
 }
 
 export function resolvePiExecutable(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const bunVirtual = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !bunVirtual && existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript, ...args] };
+  const explicit = process.env.PI_DEDE_EXECUTABLE;
+  if (explicit) {
+    if (!isAbsolute(explicit) || explicit.includes("\0") || !existsSync(explicit)) {
+      throw new Error("PI_DEDE_EXECUTABLE must name an existing absolute trusted Pi executable or CLI .js file");
+    }
+    return /\.[cm]?js$/.test(explicit)
+      ? { command: process.execPath, args: [explicit, ...args] }
+      : { command: explicit, args };
   }
-
   const executable = basename(process.execPath).toLowerCase();
-  if (!/^(node|bun)(\.exe)?$/.test(executable)) return { command: process.execPath, args };
-  return { command: "pi", args };
+  if (/^pi(\.exe)?$/.test(executable) && (process.argv[1]?.startsWith("/$bunfs/root/") || !/^(node|bun)(\.exe)?$/.test(executable))) {
+    return { command: process.execPath, args };
+  }
+  try {
+    const require = createRequire(import.meta.url);
+    let directory = dirname(require.resolve("@earendil-works/pi-coding-agent"));
+    for (;;) {
+      const manifest = resolve(directory, "package.json");
+      if (existsSync(manifest)) {
+        const pkg = JSON.parse(readFileSync(manifest, "utf8"));
+        if (pkg.name === "@earendil-works/pi-coding-agent") {
+          const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.pi;
+          if (typeof bin === "string" && existsSync(resolve(directory, bin))) {
+            return { command: process.execPath, args: [resolve(directory, bin), ...args] };
+          }
+          break;
+        }
+      }
+      const parent = dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+  } catch { /* actionable error below, never relaunch an unrelated SDK host */ }
+  throw new Error("Cannot resolve the installed Pi CLI. Install @earendil-works/pi-coding-agent or set PI_DEDE_EXECUTABLE to an absolute trusted Pi launcher.");
 }
 
 export interface ChildInvocationOptions {
@@ -64,7 +91,7 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
   if (visibleTools.length === 0) args.push("--no-tools");
   else args.push("--tools", visibleTools.join(","));
   args.push("--model", agent.model, "--thinking", agent.thinking);
-  args.push(...(options.additionalArgs ?? []));
+  args.push(...additionalArgv(options.additionalArgs ?? []));
 
   const invocation = resolvePiExecutable(args);
   const env: NodeJS.ProcessEnv = mergeChildEnv([options.baseEnv ?? process.env, agent.env]);
@@ -79,6 +106,8 @@ export function buildChildInvocation(options: ChildInvocationOptions): PiInvocat
   env.PI_DEDE_CONTEXT_MODE = agent.resolvedContextMode;
   env.PI_DEDE_CHILD_BOOTSTRAP = "1";
   env.PI_DEDE_ALLOWED_TOOLS = JSON.stringify(agent.tools);
+  if (agent.forkSurfaceFingerprint) env.PI_DEDE_FORK_SURFACE = agent.forkSurfaceFingerprint;
+  if (agent.resolvedContextMode === "fork") env.PI_DEDE_EXPECTED_MODEL = agent.model;
   if (agent.cacheAffinityKey) env.PI_DEDE_CACHE_AFFINITY_KEY = agent.cacheAffinityKey;
   if (agent.resolvedContextMode === "fork") env.PI_DEDE_MASTER_SYSTEM_PROMPT_PATH = options.systemPromptPath;
 

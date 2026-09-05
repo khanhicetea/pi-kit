@@ -49,6 +49,7 @@ describe("analyzeEdits", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok && result.failure.kind === "ambiguous") {
 			expect(result.failure.editIndex).toBe(0);
+			expect(result.failure.occurrenceCount).toBe(3);
 			expect(result.failure.occurrenceOffsets).toHaveLength(3);
 			expect(file.slice(result.failure.occurrenceOffsets[0], 3)).toBe("one");
 		} else {
@@ -102,6 +103,18 @@ describe("analyzeEdits", () => {
 			const result = analyzeEdits("abc", [{ oldText, newText: "x" }]);
 			expect(result).toEqual({ ok: false, failure: { kind: "empty-old-text", editIndex: 0 } });
 		}
+	});
+
+	it("retains Pi's non-overlapping occurrence policy for self-overlapping needles", () => {
+		const result = analyzeEdits("aaa", [{ oldText: "aa", newText: "X" }]);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(applyAnalysis("aaa", result.analysis).newContent).toBe("Xa");
+	});
+
+	it("supports NFKC fuzzy matching", () => {
+		const result = analyzeEdits("name = Ａ\n", [{ oldText: "name = A", newText: "name = B" }]);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(applyAnalysis("name = Ａ\n", result.analysis).newContent).toBe("name = B\n");
 	});
 
 	it("rejects overlapping edits with line ranges", () => {
@@ -169,6 +182,16 @@ describe("applyAnalysis", () => {
 			expect(result.analysis.usedFuzzyMatch).toBe(true);
 			const { newContent } = applyAnalysis(file, result.analysis);
 			expect(newContent).toBe("renamed\nkeep me exactly\ny\t\n");
+		}
+	});
+
+	it("preserves an untouched whitespace-only final unterminated line", () => {
+		const file = "value   \nnext\n   ";
+		const result = analyzeEdits(file, [{ oldText: "value\nnext", newText: "renamed\nn" }]);
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			const { newContent } = applyAnalysis(file, result.analysis);
+			expect(newContent).toBe("renamed\nn\n   ");
 		}
 	});
 });

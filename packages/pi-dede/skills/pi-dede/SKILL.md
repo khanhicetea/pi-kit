@@ -14,9 +14,22 @@ Delegate only when all are true:
 1. You personally inspected enough source material to identify the exact uncertainty or approved change.
 2. A child can receive one bounded contract with a clear completion boundary.
 3. Delegation adds leverage beyond roughly two local tool calls.
-4. Parallel lanes, if any, are independent and read-only.
+4. Parallel lanes are genuinely independent: at most one approved writer, with any read-only lanes using disjoint scopes and revalidating mutable state.
 
 Do not delegate first-pass orientation, one symbol lookup, planning, synthesis, or vague work such as “review the project.”
+
+## Choose the economical route
+
+- Known file read, grep, or one authorized command: direct tools; batch already-grounded independent calls.
+- Bounded multi-step failure classification or contract checking: explicit `contextMode: "isolated"` with a user-configured cheaper profile model.
+- Evidence requiring substantial prior reasoning/history: same-model `auto`/`fork`, when compatibility can be established.
+- Architecture, high-risk ambiguity, and synthesis: master-owned; delegate only separable evidence.
+
+Compare total expected setup + child input/cache/output + handoff/verification + likely repair against direct master work, and compare critical-path latency. A tiny isolated task can cost less than a large cached fork. No model-powered routing step, hard-coded price rankings, automatic retries, or escalation.
+
+Omitting `model` in auto/fork retains the master model even after auto falls back to isolation. Profile model defaults apply only to explicit isolation. Use 60-second execution ceilings for selected microtasks, adequate low thinking, and 100–200-word evidence targets within the 400-word cap. Setup, queue, and disposal add time. Group similar-duration children; the slowest sibling holds the synchronous result. Emit independent master tool work as siblings only where the host actually supports concurrency.
+
+Returning quickly may help parent cache retention, but providers control eviction and keys. Child fork cache reuse, child continuation reuse, and parent-next-request reuse are separate observations, not guarantees. Start fresh for unrelated work.
 
 ## Build a compact contract
 
@@ -36,7 +49,7 @@ For each new child, choose `contextMode` deliberately when the default `auto` is
 - use `isolated` for clean-room evidence, minimal conversation disclosure, a deliberately different model, or a tiny independent task;
 - omit it or use `auto` when pi-dede should select a cache-compatible fork only when its context economics permit one.
 
-Forked children retain the master's visible tool definitions for cache fidelity, but pi-dede blocks execution outside the profile/tool subset. Do not widen `tools` merely because the definitions are already visible.
+Forks require locally verifiable ordered tool metadata; extension/SDK tools can cause auto fallback or forced-fork rejection. Prefix compatibility is best-effort: host context/provider hooks are not reproduced or fully observable. Pi-dede blocks execution outside the profile/tool subset. Do not widen `tools` merely because the definitions are already visible.
 
 Before parallel fanout, compare the contracts. Do not send clone prompts with only labels, issue numbers, or broad paths swapped. Every lane must remain distinct without its id.
 
@@ -50,7 +63,7 @@ Before parallel fanout, compare the contracts. Do not send clone prompts with on
 | New task directly related to a finished child | `continueFrom` its handle; keep its role/capabilities and provide only new facts |
 | Finish near-complete timed-out work | One solo `resume` with only what remains and a 30–180 second deadline |
 
-A run allows at most one mutation-capable child; it may run alongside read-only agents, while a runtime-wide lease serializes writers from concurrent calls. Do not create extra lanes merely to use all three slots.
+A run allows at most one mutation-capable child; it may run alongside read-only agents, while a runtime-wide lease serializes writers from concurrent calls. Do not create extra lanes merely to use all three slots. The writer lease coordinates only children in this extension runtime, not master edits, other Pi processes, or external editors. A check using bash still takes the sole writer lease; never pair a tester with another writer.
 
 ## Reuse an existing child lineage
 

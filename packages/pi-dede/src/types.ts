@@ -73,6 +73,7 @@ export interface ResolvedAgent {
   visibleTools?: string[];
   /** Exact effective master system prompt retained in fork mode. */
   inheritedSystemPrompt?: string;
+  forkSurfaceFingerprint?: string;
   /** Provider cache-affinity key retained across a forked child lineage. */
   cacheAffinityKey?: string;
   forkedFrom?: {
@@ -122,6 +123,8 @@ export interface DedeChildResult {
   };
   cacheHitRatio?: number;
   timeToFirstEventMs?: number;
+  diagnostics?: { setupMs?: number; queueMs?: number; executionMs?: number; disposalMs?: number;
+    malformedLines?: number; oversizedLines?: number; softWarningSent?: boolean; cleanupConfirmed?: boolean };
   status: ChildStatus;
   model: string;
   thinking: ThinkingLevel;
@@ -129,6 +132,8 @@ export interface DedeChildResult {
   timeoutSeconds: number;
   /** Persistent Pi session ID; inspect later with `pi --session <id>`. */
   sessionId?: string;
+  /** Exact persistent JSONL path, readable without launching another Pi. */
+  sessionPath?: string;
   continuedFrom?: string;
   continuationIndex?: number;
   continuationHandle?: string;

@@ -15,50 +15,27 @@ export function deriveStatus(results: readonly DedeChildResult[]): DedeToolDetai
   return "partial";
 }
 
-function childBody(result: DedeChildResult): string {
-  const context = result.contextModeResolved === "fork" && result.forkedFrom
-    ? `Context: forked from master session \`${result.forkedFrom.sessionId}\`${result.forkedFrom.contextTokens !== undefined ? ` (${result.forkedFrom.contextTokens} inherited tokens)` : ""}${result.cacheHitRatio !== undefined ? `; ${(result.cacheHitRatio * 100).toFixed(0)}% prompt-cache read ratio` : ""}.`
-    : result.contextFallbackReason
-      ? `Context: isolated; auto-fork fallback: ${result.contextFallbackReason}.`
-      : "Context: isolated.";
-  const session = result.sessionId
-    ? `Session: \`${result.sessionId}\` (inspect with \`pi --session ${result.sessionId}\`)`
-    : undefined;
-  const continuation = result.continuationHandle
-    ? `Related continuation available: \`${result.continuationHandle}\`. For a new bounded task that directly benefits from this child's context, call dede_delegate with \"continueFrom\": \"${result.continuationHandle}\". Keep its capabilities unchanged and provide only new facts in sharedContext.`
-    : undefined;
-  if (result.status === "succeeded") return [context, session, result.finalText || "(no output)", continuation].filter(Boolean).join("\n\n");
-  const resume = result.resumeHandle
-    ? `Short resume available: \`${result.resumeHandle}\`. Resume only if the partial work is close to useful completion. Call dede_delegate with one agent using \"resume\": \"${result.resumeHandle}\", a goal stating only what remains, and timeoutSeconds from 30 to 180.`
-    : undefined;
-  const diagnostics = [
-    context,
-    session,
-    result.errorMessage,
-    resume,
-    continuation,
-    result.finalText && `Partial output:\n${result.finalText}`,
-    result.stderrTail && `stderr (tail):\n\`\`\`\n${result.stderrTail}\n\`\`\``,
-  ].filter(Boolean);
-  return diagnostics.join("\n\n") || "(no diagnostic output)";
-}
-
 function boundedChild(result: DedeChildResult): string {
-  const body = childBody(result);
-  // Reserve room for the explicit truncation notice so the complete child section remains bounded.
-  let truncation = truncateHead(body, { maxBytes: CHILD_MODEL_MAX_BYTES - 768, maxLines: CHILD_MODEL_MAX_LINES - 3 });
-  let content = truncation.content;
-  if (truncation.firstLineExceedsLimit) {
-    const byteCap = truncateUtf8(body, CHILD_MODEL_MAX_BYTES - 768);
-    content = byteCap.text;
-    truncation = { ...truncation, truncated: true, outputBytes: Buffer.byteLength(content), outputLines: 1 };
-  }
-  if (!truncation.truncated) return content;
-
-  const location = result.artifactPath
-    ? ` Full output: ${result.artifactPath}`
-    : " More text remains in structured tool details.";
-  return `${content}\n\n[Child output truncated to ${truncation.outputLines}/${truncation.totalLines} lines and ${formatSize(truncation.outputBytes)}/${formatSize(truncation.totalBytes)}.${location}]`;
+  const singleLine = (value: string, bytes: number) => truncateUtf8(value.replace(/[\r\n]+/g, " "), bytes).text;
+  // Control metadata is never competing with the answer or unbounded diagnostics.
+  const controls = [
+    result.sessionId && `Session: \`${singleLine(result.sessionId, 128)}\` (inspect: pi --session ${singleLine(result.sessionId, 128)})`,
+    result.continuationHandle && `Related continuation available: \`${singleLine(result.continuationHandle, 128)}\`. Use "continueFrom": "${singleLine(result.continuationHandle, 128)}" only when it directly benefits from this child's context; same capabilities, new facts only; revalidate mutable state.`,
+    result.resumeHandle && `Short resume available: \`${singleLine(result.resumeHandle, 128)}\`. Use "resume": "${singleLine(result.resumeHandle, 128)}" solo, 30–180s, only if close to finishing.`,
+    `Context: ${result.contextModeResolved ?? "isolated"}${result.contextFallbackReason ? `; ${singleLine(result.contextFallbackReason, 240)}` : ""}.`,
+    result.errorMessage && `Error: ${singleLine(result.errorMessage, 320)}`,
+    result.artifactPath && Buffer.byteLength(result.artifactPath) <= 768
+      ? `Full answer: read ${result.artifactPath}`
+      : result.sessionPath && Buffer.byteLength(result.sessionPath) <= 768
+        ? `Full conversation: read JSONL ${result.sessionPath} (assistant message content; paginate as needed).`
+        : "Full conversation: inspect the persistent Pi session above.",
+  ].filter(Boolean).join("\n");
+  const body = result.finalText || result.stderrTail || "(no output)";
+  const budget = Math.max(0, CHILD_MODEL_MAX_BYTES - 512 - Buffer.byteLength(controls));
+  const lines = body.split("\n").slice(0, CHILD_MODEL_MAX_LINES - 16).join("\n");
+  const bounded = truncateUtf8(lines, budget);
+  const truncated = bounded.truncated || lines !== body || Boolean(result.artifactPath);
+  return `${controls}\n\n${result.status === "succeeded" ? "" : "Partial output:\n"}${bounded.text}${truncated ? "\n[Child output truncated; use the retrieval route above.]" : ""}`;
 }
 
 export function formatModelContent(details: DedeToolDetails): string {
@@ -101,6 +78,7 @@ export function cloneDetails(details: DedeToolDetails): DedeToolDetails {
       ...result,
       tools: [...result.tools],
       forkedFrom: result.forkedFrom ? { ...result.forkedFrom } : undefined,
+      diagnostics: result.diagnostics ? { ...result.diagnostics } : undefined,
       usage: { ...result.usage },
       activity: result.activity.map((activity) => ({ ...activity })),
     })),

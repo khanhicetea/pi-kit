@@ -65,6 +65,23 @@ describe("PiJsonCollector", () => {
     expect(result.usage.input).toBe(10);
   });
 
+  it("ignores valid JSON that is not an event and malformed fields", () => {
+    const collector = new PiJsonCollector();
+    for (const value of [null, "text", 42, [], true, {}, { type: null },
+      { type: "message_end", message: null }, { type: "message_end", message: { role: "assistant", errorMessage: {} } }]) {
+      expect(() => collector.push(`${JSON.stringify(value)}\n`)).not.toThrow();
+    }
+    collector.push(`${JSON.stringify({ type: "message_end", message: assistant })}\n`);
+    expect(collector.end().finalText).toContain("Useful result");
+    expect(collector.snapshot().malformedLines).toBe(9);
+  });
+
+  it("does not classify observer exceptions as malformed wire data", () => {
+    const collector = new PiJsonCollector(undefined, () => { throw new Error("observer"); });
+    expect(() => collector.push('{"type":"future_event"}\n')).toThrow("observer");
+    expect(collector.snapshot().malformedLines).toBe(0);
+  });
+
   it("bounds malformed and oversized diagnostics while continuing", () => {
     const collector = new PiJsonCollector();
     collector.push("not json\n{bad}\n");

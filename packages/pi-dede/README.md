@@ -38,13 +38,19 @@ Before parallel fan-out, compare the goals. Each lane must remain distinct witho
 
 The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads it on demand when a delegation/orchestration task matches, or you can invoke `/skill:pi-dede` explicitly.
 
+## Audit hardening
+
+See [IMPLEMENTATION-NOTES.md](./IMPLEMENTATION-NOTES.md) for current lifecycle, CLI, fork-compatibility and cancellation-accounting constraints, intentional contract changes, and deferred validation. Those notes qualify the older descriptions below; no runtime compatibility matrix or performance claims have been verified.
+
+Choose direct tools for a known lookup/command, explicit isolation with a configured cheaper profile for bounded multi-step interpretation, and same-model auto/fork for substantial necessary history. Compare total cost and critical-path latency, including handoff and repair—not cache reads alone. Selected microtasks can use a 60-second execution ceiling; setup, queues and disposal add time. See the skill recipes for concrete examples.
+
 ## Features
 
 - One LLM-callable tool: `dede_delegate`
 - One to three independent persistent children per call
 - `auto`, `fork`, and `isolated` context modes for new children
 - Safe master-session forks that exclude the unresolved delegation tool call
-- Exact master system prompt and visible tool surface in fork mode for cache fidelity
+- Best-effort master-prefix reuse with ordered tool metadata checks; unverified extension/SDK surfaces fall back or reject forced forks
 - Runtime-enforced child tool subsets even when forked children retain master-visible tool definitions
 - Parent prompt-cache affinity with measured cache-read ratios where the provider exposes it
 - Global three-process FIFO limit across concurrent calls
@@ -85,7 +91,7 @@ pi -e ./src/index.ts
 
 Children run as headless `pi --mode rpc` processes. The master drives each child over a bidirectional stdin/stdout JSON channel: it sends the task as a `prompt`, reads the event stream for progress, and—uniquely for a hard timeout—can `steer` a child that is running long.
 
-Each child has one deadline (default 180s, 30–1800s). Thirty seconds before the deadline (and never in the first five seconds of a run), the master sends a steering message telling the child to stop exploring and produce its final bounded answer with the evidence it has. A child that reaches a settled state after the steer is recorded as `succeeded`. A child that does not finalize receives an RPC `abort` at the deadline, a short grace to settle, and then a hard process-tree termination (`SIGTERM`, then `SIGKILL`); it is recorded as `timed_out` and keeps its short-resume handle.
+Each child has one deadline (default 180s, 30–1800s). At most thirty seconds (20% of the execution budget for shorter runs) before the deadline (and never in the first five seconds of a run), the master sends a steering message telling the child to stop exploring and produce its final bounded answer with the evidence it has. A child that reaches a settled state after the steer is recorded as `succeeded`. A child that does not finalize receives an RPC `abort` at the deadline, a short grace to settle, and then a hard process-tree termination (`SIGTERM`, then `SIGKILL`); it is recorded as `timed_out` and keeps its short-resume handle.
 
 Esc, session replacement, reload, and shutdown all send an RPC `abort` and then terminate the running children. Extension UI dialogs a child emits are auto-cancelled, so an autonomous child can never hang waiting for a human to answer it.
 
@@ -260,7 +266,7 @@ Persistent profile model, thinking, and environment overrides—and extra child 
 
 `context.forkMinTokens` is a non-negative integer. `context.forkMaxContextRatio` is greater than zero and at most one. Global values are merged with trusted-project field overrides.
 
-`additionalArgs` is inserted into every child command after pi-dede's built-in options and before the task prompt. The top-level list is shared by all profiles. If `profiles.<profile>.additionalArgs` is present, it replaces the shared list for that profile, including when it is an empty array. A trusted project's top-level `additionalArgs` array replaces the global array; profile fields override the corresponding global profile fields.
+`additionalArgs` is validated and appended after pi-dede's controlled options; the task is sent only through RPC. Supported options are `-e`/`--extension`, matching `--provider`, `--api-key`, `--skill`, `--no-extensions`, `--no-skills`, and `--no-context-files`. Other options, positional prompts and lifecycle overrides are rejected; use typed agent fields for model/thinking/tools/role changes. The top-level list is shared by all profiles. If `profiles.<profile>.additionalArgs` is present, it replaces the shared list for that profile, including when it is an empty array. A trusted project's top-level `additionalArgs` array replaces the global array; profile fields override the corresponding global profile fields.
 
 Project values override global model/thinking fields and merge environment values by variable name. Per-agent values then override configured environment values. For model selection, `auto` and `fork` retain the master model unless `agents[].model` is explicit; profile model defaults apply to explicit `isolated` children. The complete child environment precedence is inherited master process environment, global profile environment, trusted-project profile environment, per-agent environment, then pi-dede's internal control variables.
 

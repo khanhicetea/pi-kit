@@ -11,29 +11,44 @@ export interface ReadEvidence {
 	/** 0-based, end-exclusive offsets in LF-normalized, BOM-stripped content. */
 	startOffset: number;
 	endOffset: number;
-	/** 1-based inclusive range actually shown to the model. */
+	/** 1-based inclusive range represented by the verified read output. */
 	startLine: number;
 	endLine: number;
 }
 
 interface ReadCall {
+	id: string;
 	path: string;
 	offset?: number;
 	limit?: number;
 }
 
 interface StoredToolResult {
+	role: "toolResult";
 	toolCallId: string;
 	toolName: string;
 	isError: boolean;
 	content: Array<{ type: string; text?: string }>;
 }
 
+interface StoredAssistant {
+	role: "assistant";
+	content: Array<{ type: string; id?: string; name?: string; arguments?: unknown }>;
+}
+
+interface ContextEntryLike {
+	type: string;
+	message?: StoredAssistant | StoredToolResult | { role: string };
+	retainedTail?: Array<StoredAssistant | StoredToolResult | { role: string }>;
+}
+
 /**
- * Find the newest successful read of targetPath still present in the active
- * model context. The returned range is accepted only when the stored tool
- * output exactly matches what the built-in read tool would produce from the
- * current file bytes. This makes stale or custom read output fail closed.
+ * Find the newest read call for targetPath in Pi's compaction-aware stored
+ * context. The call is accepted only when its successful result exactly
+ * matches the built-in read formatting for the current LF-normalized content.
+ *
+ * This establishes stored-context evidence, not proof of the final provider
+ * payload after other extensions' context/provider hooks.
  */
 export async function findLatestReadEvidence(
 	sessionManager: Pick<ExtensionContext["sessionManager"], "buildContextEntries"> | undefined,
@@ -42,49 +57,58 @@ export async function findLatestReadEvidence(
 	resolvePath: (path: string) => Promise<string>,
 ): Promise<ReadEvidence | null> {
 	if (!sessionManager) return null;
-	const entries = sessionManager.buildContextEntries();
-	const calls = new Map<string, ReadCall>();
+	const entries = sessionManager.buildContextEntries() as ContextEntryLike[];
+	const messages = entries.flatMap((entry) => {
+		if (entry.type === "message" && entry.message) return [entry.message];
+		if (entry.type === "compaction" && Array.isArray(entry.retainedTail)) return entry.retainedTail;
+		return [];
+	});
+	const calls: ReadCall[] = [];
+	const results = new Map<string, StoredToolResult>();
 
-	for (const entry of entries) {
-		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-		for (const item of entry.message.content) {
-			if (item.type !== "toolCall" || item.name !== "read") continue;
-			const args = item.arguments as Record<string, unknown>;
-			if (typeof args.path !== "string") continue;
-			calls.set(item.id, {
-				path: args.path,
-				offset: typeof args.offset === "number" ? args.offset : undefined,
-				limit: typeof args.limit === "number" ? args.limit : undefined,
-			});
+	for (const message of messages) {
+		if (message.role === "assistant") {
+			for (const item of (message as StoredAssistant).content) {
+				if (item.type !== "toolCall" || item.name !== "read" || typeof item.id !== "string") continue;
+				const args = item.arguments as Record<string, unknown> | undefined;
+				if (!args || typeof args.path !== "string") continue;
+				calls.push({
+					id: item.id,
+					path: args.path,
+					offset: typeof args.offset === "number" ? args.offset : undefined,
+					limit: typeof args.limit === "number" ? args.limit : undefined,
+				});
+			}
+		} else if (message.role === "toolResult") {
+			const result = message as StoredToolResult;
+			if (result.toolName === "read") results.set(result.toolCallId, result);
 		}
 	}
 
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const entry = entries[i];
-		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
-		const result = entry.message as StoredToolResult;
-		if (result.toolName !== "read" || result.isError) continue;
-		const call = calls.get(result.toolCallId);
-		if (!call) continue;
-
+	for (let index = calls.length - 1; index >= 0; index--) {
+		const call = calls[index];
 		let readPath: string;
 		try {
 			readPath = await resolvePath(call.path);
 		} catch {
-			continue;
+			// Without a canonical identity we cannot prove that this newer read is
+			// unrelated, so fail closed instead of falling back to older intent.
+			return null;
 		}
 		if (readPath !== targetPath) continue;
 
-		// This is the latest successful read of this file. If it cannot be
-		// verified, do not silently fall back to older, potentially stale intent.
+		// Never fall back to older intent when the newest same-file read is
+		// missing, failed, malformed, or stale.
+		const result = results.get(call.id);
+		if (!result || result.isError) return null;
 		return evidenceFromBuiltinRead(normalizedContent, call, result.content);
 	}
 	return null;
 }
 
-function evidenceFromBuiltinRead(
+export function evidenceFromBuiltinRead(
 	content: string,
-	call: ReadCall,
+	call: Pick<ReadCall, "path" | "offset" | "limit">,
 	blocks: Array<{ type: string; text?: string }>,
 ): ReadEvidence | null {
 	if (blocks.length !== 1 || blocks[0].type !== "text" || typeof blocks[0].text !== "string") return null;

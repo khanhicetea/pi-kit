@@ -89,6 +89,22 @@ describe("output", () => {
     expect(formatSettledSummary([])).toBeUndefined();
   });
 
+  it("reserves every handle and retrieval route for long Unicode answers", () => {
+    const results = ["one", "two", "three"].map((id) => ({
+      ...child(id, "succeeded", "🦊".repeat(8000)),
+      continuationHandle: `dede_${id}`, sessionId: id, sessionPath: `/sessions/${id}.jsonl`,
+      contextFallbackReason: "reason".repeat(2000), errorMessage: "error".repeat(2000),
+    }));
+    const text = formatModelContent(details(results));
+    for (const result of results) {
+      expect(text).toContain(result.continuationHandle);
+      expect(text).toContain(result.sessionPath);
+    }
+    expect(text).not.toContain("�");
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(MODEL_CONTENT_MAX_BYTES);
+    expect(text.split("\n").length).toBeLessThanOrEqual(MODEL_CONTENT_MAX_LINES);
+  });
+
   it("bounds each child near 4 KiB and the aggregate to 12 KiB", () => {
     const huge = Array.from({ length: 5000 }, (_, index) => `line ${index} ${"x".repeat(100)}`).join("\n");
     const one = formatModelContent(details([child("one", "succeeded", huge)]));

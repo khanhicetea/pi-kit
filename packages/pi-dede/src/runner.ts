@@ -1,7 +1,7 @@
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { buildChildInvocation } from "./invocation.ts";
 import { RpcChild, type RpcChildOutcome } from "./rpc-child.ts";
 import { childUsage, type CollectedProtocol } from "./json-events.ts";
@@ -39,12 +39,17 @@ export function truncateUtf8(value: string, maxBytes: number): { text: string; t
   return { text: buffer.subarray(0, end).toString("utf8"), truncated: true };
 }
 
-function signalTree(proc: ChildProcess, signal: NodeJS.Signals): void {
+async function signalTree(proc: ChildProcess, signal: NodeJS.Signals): Promise<void> {
   if (!proc.pid) return;
   try {
     if (process.platform === "win32") {
-      if (signal === "SIGKILL") spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore", shell: false });
-      else spawnSync("taskkill", ["/pid", String(proc.pid), "/T"], { stdio: "ignore", shell: false });
+      const killer = spawn("taskkill", ["/pid", String(proc.pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])], { stdio: "ignore", shell: false });
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => { killer.kill(); resolve(); }, 1000);
+        const done = () => { clearTimeout(timer); resolve(); };
+        killer.once("close", done);
+        killer.once("error", done);
+      });
     } else {
       process.kill(-proc.pid, signal);
     }
@@ -61,6 +66,12 @@ interface TrackedProcess {
 /** Tracks complete process groups for cancellation and session shutdown. */
 export class ChildProcessManager {
   private readonly tracked = new Set<TrackedProcess>();
+  private readonly disposals = new WeakMap<ChildProcess, Promise<boolean>>();
+  quarantined = false;
+
+  assertLaunchAllowed(): void {
+    if (this.quarantined) throw new Error("Child runtime quarantined: process-tree termination could not be confirmed. Inspect descendants and restart Pi before delegating again.");
+  }
 
   track(child: ChildProcess): () => void {
     let resolveClosed!: () => void;
@@ -69,21 +80,42 @@ export class ChildProcessManager {
     this.tracked.add(tracked);
     const finish = () => {
       resolveClosed();
-      this.tracked.delete(tracked);
     };
     child.once("close", finish);
-    child.once("error", finish);
+    child.once("error", () => { if (!child.pid) finish(); });
     return finish;
   }
 
-  async terminate(child: ChildProcess): Promise<void> {
+  terminate(child: ChildProcess): Promise<boolean> {
+    const existing = this.disposals.get(child);
+    if (existing) return existing;
+    const disposal = this.dispose(child);
+    this.disposals.set(child, disposal);
+    return disposal;
+  }
+
+  private async dispose(child: ChildProcess): Promise<boolean> {
     const tracked = [...this.tracked].find((item) => item.child === child);
-    if (!tracked) return;
-    signalTree(child, "SIGTERM");
-    await Promise.race([tracked.closed, delay(5000)]);
-    if (this.tracked.has(tracked)) {
-      signalTree(child, "SIGKILL");
-      await Promise.race([tracked.closed, delay(1000)]);
+    const gone = () => {
+      if (!child.pid) return true; // spawn failure
+      if (process.platform === "win32") return false; // leader exit cannot prove descendant cleanup
+      try { process.kill(-child.pid, 0); return false; }
+      catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+    };
+    try {
+      await signalTree(child, "SIGTERM");
+      const grace = Date.now() + 1000;
+      while (!gone() && Date.now() < grace) await delay(50);
+      if (!gone()) await signalTree(child, "SIGKILL");
+      const deadline = Date.now() + 1000;
+      while (!gone() && Date.now() < deadline) await delay(50);
+      const confirmed = gone();
+      if (confirmed && tracked) this.tracked.delete(tracked);
+      if (!confirmed) this.quarantined = true;
+      return confirmed;
+    } catch {
+      this.quarantined = true;
+      return false;
     }
   }
 
@@ -97,28 +129,39 @@ export class ChildProcessManager {
 }
 
 export class ArtifactManager {
-  private directory?: string;
+  private directory?: Promise<string>;
+  private readonly writes = new Set<Promise<string>>();
+  private cleanupPromise?: Promise<void>;
   private closed = false;
   constructor(private readonly sessionId: string) {}
 
   async write(runId: string, agentId: string, content: string): Promise<string> {
     if (this.closed) throw new Error("Artifact manager is shut down");
-    if (!this.directory) {
-      const safeSession = this.sessionId.replace(/[^a-zA-Z0-9-]/g, "_").slice(0, 48) || "session";
-      this.directory = await mkdtemp(join(tmpdir(), `pi-dede-artifacts-${safeSession}-`));
-      await chmod(this.directory, 0o700);
-    }
-    const path = join(this.directory, `${runId}-${agentId}.md`);
-    await writeFile(path, content, { encoding: "utf8", mode: 0o600 });
-    return path;
+    this.directory ??= this.initialize(); // failed initialization stays failed; no hidden retry
+    const directory = this.directory;
+    const write = (async () => {
+      const path = join(await directory, `${runId}-${agentId}.md`);
+      await writeFile(path, content, { encoding: "utf8", mode: 0o600 });
+      return path;
+    })();
+    this.writes.add(write);
+    try { return await write; } finally { this.writes.delete(write); }
   }
 
-  async cleanup(): Promise<void> {
+  private async initialize(): Promise<string> {
+    const safeSession = this.sessionId.replace(/[^a-zA-Z0-9-]/g, "_").slice(0, 48) || "session";
+    const directory = await mkdtemp(join(tmpdir(), `pi-dede-artifacts-${safeSession}-`));
+    try { await chmod(directory, 0o700); return directory; }
+    catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
+  }
+
+  cleanup(): Promise<void> {
     this.closed = true;
-    if (!this.directory) return;
-    const directory = this.directory;
-    this.directory = undefined;
-    await rm(directory, { recursive: true, force: true });
+    return this.cleanupPromise ??= (async () => {
+      await Promise.allSettled([...this.writes]);
+      const directory = await this.directory?.catch(() => undefined);
+      if (directory) await rm(directory, { recursive: true, force: true });
+    })();
   }
 }
 
@@ -138,6 +181,7 @@ export interface RunChildOptions {
   manager: ChildProcessManager;
   artifacts: ArtifactManager;
   onProgress?: (text: string, protocol: CollectedProtocol) => void;
+  onLaunch?: () => void;
 }
 
 type FinishReason = "settled" | "closed" | "timeout" | "cancelled";
@@ -176,6 +220,8 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     stderr = tailUtf8(stderr, chunk.toString("utf8"), STDERR_CAP);
   };
 
+  if (options.signal?.aborted) throw new Error("Delegation cancelled before launch");
+  options.manager.assertLaunchAllowed();
   const child = new RpcChild({
     invocation,
     cwd: options.cwd,
@@ -188,7 +234,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   options.manager.track(child.process);
 
   const deadline = startedAt + options.timeoutSeconds * 1000;
-  const warnAt = Math.max(startedAt + MIN_RUN_BEFORE_WARN_MS, deadline - SOFT_TERMINATE_GRACE_MS);
+  const warnAt = Math.max(startedAt + MIN_RUN_BEFORE_WARN_MS, deadline - Math.min(SOFT_TERMINATE_GRACE_MS, options.timeoutSeconds * 1000 * 0.2));
 
   let finishedFlag = false;
   let finish!: (reason: FinishReason) => void;
@@ -211,7 +257,8 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     if (finishedFlag || warned) return;
     warned = true;
     child.steer(buildSoftTerminateWarning(Math.max(0, Math.round((deadline - Date.now()) / 1000))));
-    options.onProgress?.("soft deadline warning sent", child.protocol);
+    try { options.onProgress?.("soft deadline warning sent", child.protocol); }
+    catch (error) { stderr = tailUtf8(stderr, `\nProgress observer failed: ${String(error)}`, STDERR_CAP); }
   }, Math.max(0, warnAt - Date.now()));
   warnTimer.unref?.();
 
@@ -245,29 +292,37 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   else options.signal?.addEventListener("abort", onAbort, { once: true });
 
   // Deliver the task over the RPC stdin channel.
-  child.prompt(taskContent);
-
-  const reason = await finished;
-
-  clearTimeout(warnTimer);
-  clearTimeout(deadlineTimer);
-  options.signal?.removeEventListener("abort", onAbort);
-
-  // Reap the child process and drain remaining output.
-  child.close();
-  const reaped = await Promise.race([
-    child.closed.then(() => true),
-    delay(DISPOSE_CLOSE_MS).then(() => false),
-  ]);
-  if (!reaped) await options.manager.terminate(child.process);
-  await child.closed;
-  outcome ??= await child.done;
+  let reason: FinishReason;
+  let disposalStartedAt = 0;
+  let disposalMs = 0;
+  let cleanupConfirmed = false;
+  try {
+    options.onLaunch?.();
+    if (!cancelled) child.prompt(taskContent);
+    reason = await finished;
+  } finally {
+    disposalStartedAt = Date.now();
+    clearTimeout(warnTimer);
+    clearTimeout(deadlineTimer);
+    options.signal?.removeEventListener("abort", onAbort);
+    // Reap and drain with a finite budget; a closed leader is not a closed group.
+    child.close();
+    await Promise.race([child.closed, delay(DISPOSE_CLOSE_MS)]);
+    cleanupConfirmed = await options.manager.terminate(child.process);
+    child.detachOutput();
+    disposalMs = Date.now() - disposalStartedAt;
+  }
+  outcome ??= await Promise.race([child.done, Promise.resolve(undefined)]);
 
   const protocol = child.endProtocol();
   const rawFinalText = protocol.finalText;
   const capped = truncateUtf8(rawFinalText, DETAILS_TEXT_CAP);
   let artifactPath: string | undefined;
-  if (capped.truncated) artifactPath = await options.artifacts.write(options.runId, options.agent.id, rawFinalText);
+  let artifactError: string | undefined;
+  if (Buffer.byteLength(rawFinalText) > 1800 || rawFinalText.split("\n").length > 100) {
+    try { artifactPath = await options.artifacts.write(options.runId, options.agent.id, rawFinalText); }
+    catch (error) { artifactError = `Full-output artifact unavailable: ${String(error)}. Inspect persistent session ${options.childSessionId}.`; }
+  }
 
   let status: DedeChildResult["status"] = "succeeded";
   let errorMessage = protocol.errorMessage ?? outcome?.spawnError ?? outcome?.promptRejected;
@@ -297,6 +352,12 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
       : "Child JSON protocol ended without agent_end";
   }
 
+  if (!cleanupConfirmed) {
+    status = cancelled ? "cancelled" : "failed";
+    errorMessage = `${errorMessage ?? "Child finished"}; process-tree cleanup unconfirmed; runtime quarantined, no continuation/resume issued.`;
+  }
+  if (artifactError) stderr = tailUtf8(stderr, `\n${artifactError}`, STDERR_CAP);
+  firstEventAt = child.firstEventAt;
   const activity = warned && status === "timed_out" && !cancelled
     ? [...protocol.activity, { type: "status" as const, text: "soft deadline warning was sent before timeout" }].slice(-100)
     : protocol.activity;
@@ -318,6 +379,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     tools: [...options.agent.tools],
     timeoutSeconds: options.timeoutSeconds,
     sessionId: options.childSessionId,
+    sessionPath: options.sessionPath,
     ...(options.agent.continueFrom ? {
       continuedFrom: options.agent.continueFrom.handle,
       continuationIndex: options.agent.continueFrom.continuationIndex,
@@ -327,6 +389,8 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     } : { continuationIndex: 0 }),
     finalText: capped.text,
     durationMs: Date.now() - startedAt,
+    diagnostics: { disposalMs, executionMs: disposalStartedAt - startedAt,
+      malformedLines: protocol.malformedLines, oversizedLines: protocol.oversizedLines, softWarningSent: warned, cleanupConfirmed },
     ...(firstEventAt !== undefined ? { timeToFirstEventMs: firstEventAt - startedAt } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(protocol.stopReason ? { stopReason: protocol.stopReason } : {}),
@@ -341,8 +405,8 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
 
 export async function createSecureRunDirectory(runId: string): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), `pi-dede-${runId}-`));
-  await chmod(directory, 0o700);
-  return directory;
+  try { await chmod(directory, 0o700); return directory; }
+  catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
 }
 
 export async function writeSecurePrompt(directory: string, name: string, content: string): Promise<string> {

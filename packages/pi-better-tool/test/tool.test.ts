@@ -1,10 +1,15 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, link, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createEditToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { executeBetterEdit, prepareEditArguments, type BetterEditInput } from "../src/tool.ts";
+import {
+	executeBetterEdit,
+	prepareEditArguments,
+	type BetterEditInput,
+	type BetterEditOperations,
+} from "../src/tool.ts";
 
 let cwd: string;
 
@@ -32,6 +37,17 @@ function run(
 	sessionManager?: { buildContextEntries(): any[] },
 ) {
 	return executeBetterEdit({ path, edits }, undefined, { cwd, sessionManager: sessionManager as never });
+}
+
+function localOperations(overrides: Partial<BetterEditOperations> = {}): BetterEditOperations {
+	return {
+		access,
+		readFile: (path) => readFile(path),
+		realpath,
+		stat,
+		writeFile: (path, content) => writeFile(path, content, "utf8"),
+		...overrides,
+	};
 }
 
 function sessionWithRead(
@@ -128,6 +144,8 @@ describe("built-in happy-path parity", () => {
 			{ body: "alpha\nbeta\ngamma\n", edits: [{ oldText: "beta", newText: "BETA" }] },
 			{ body: "one\ntwo\nthree\n", edits: [{ oldText: "one", newText: "1" }, { oldText: "three", newText: "3" }] },
 			{ body: "value   \nnext\n", edits: [{ oldText: "value\nnext", newText: "renamed\nn" }] },
+			{ body: "name = Ａ\n", edits: [{ oldText: "name = A", newText: "name = B" }] },
+			{ body: "no terminal newline", edits: [{ oldText: "newline", newText: "NEWLINE" }] },
 		];
 		for (const [index, fixture] of cases.entries()) {
 			const better = await setup(`better-${index}.txt`, fixture.body);
@@ -143,7 +161,7 @@ describe("built-in happy-path parity", () => {
 describe("executeBetterEdit failures", () => {
 	it("fails on a missing file like the built-in tool", async () => {
 		await expect(run("nope.txt", [{ oldText: "a", newText: "b" }])).rejects.toThrow(
-			/Could not edit file: nope\.txt\. Error code: ENOENT\./,
+			/Could not access file for editing: nope\.txt\. Error code: ENOENT\. No write was started\./,
 		);
 	});
 
@@ -167,6 +185,164 @@ describe("executeBetterEdit failures", () => {
 			]),
 		).rejects.toThrow(/Could not find edits\[1\]/);
 		expect(await read(path)).toBe("aaa\nbbb\n");
+	});
+});
+
+describe("commit boundary and filesystem failures", () => {
+	it("does not start work when already aborted", async () => {
+		const { name, path } = await setup("abort-before-read.txt", "before\n");
+		const controller = new AbortController();
+		controller.abort();
+		await expect(executeBetterEdit(
+			{ path: name, edits: [{ oldText: "before", newText: "after" }] },
+			controller.signal,
+			{ cwd },
+		)).rejects.toThrow(/before the edit was committed; no write was started/);
+		expect(await read(path)).toBe("before\n");
+	});
+
+	it("does not write when success formatting fails", async () => {
+		const { name, path } = await setup("format-failure.txt", "before\n");
+		await expect(executeBetterEdit(
+			{ path: name, edits: [{ oldText: "before", newText: "after" }] },
+			undefined,
+			{ cwd },
+			{ operations: localOperations(), formatSuccess: () => { throw new Error("formatter failed"); } },
+		)).rejects.toThrow("formatter failed");
+		expect(await read(path)).toBe("before\n");
+	});
+
+	it("reports success when cancellation arrives during a resolved write", async () => {
+		const { name, path } = await setup("abort-during-write.txt", "before\n");
+		const controller = new AbortController();
+		const base = localOperations();
+		const result = await executeBetterEdit(
+			{ path: name, edits: [{ oldText: "before", newText: "after" }] },
+			controller.signal,
+			{ cwd },
+			{ operations: localOperations({
+				writeFile: async (target, content) => {
+					await base.writeFile(target, content);
+					controller.abort();
+				},
+			}) },
+		);
+		expect(result.content[0]?.text).toContain("Successfully replaced");
+		expect(await read(path)).toBe("after\n");
+	});
+
+	it("stops before writing when cancellation arrives during pre-commit revalidation", async () => {
+		const { name, path } = await setup("abort-before-write.txt", "before\n");
+		const controller = new AbortController();
+		const base = localOperations();
+		let reads = 0;
+		await expect(executeBetterEdit(
+			{ path: name, edits: [{ oldText: "before", newText: "after" }] },
+			controller.signal,
+			{ cwd },
+			{ operations: localOperations({
+				readFile: async (target) => {
+					const content = await base.readFile(target);
+					reads++;
+					if (reads === 2) controller.abort();
+					return content;
+				},
+			}) },
+		)).rejects.toThrow(/no write was started/);
+		expect(await read(path)).toBe("before\n");
+	});
+
+	it("reports an indeterminate commit when write rejects after changing bytes", async () => {
+		const { name, path } = await setup("write-rejection.txt", "before\n");
+		const base = localOperations();
+		await expect(executeBetterEdit(
+			{ path: name, edits: [{ oldText: "before", newText: "after" }] },
+			undefined,
+			{ cwd },
+			{ operations: localOperations({
+				writeFile: async (target, content) => {
+					await base.writeFile(target, content);
+					throw Object.assign(new Error("late failure"), { code: "EIO" });
+				},
+			}) },
+		)).rejects.toThrow(/may be unchanged, partially written, or fully written/);
+		expect(await read(path)).toBe("after\n");
+	});
+
+	it("detects an external modification before starting its write", async () => {
+		const { name, path } = await setup("external.txt", "before\n");
+		const base = localOperations();
+		let reads = 0;
+		await expect(executeBetterEdit(
+			{ path: name, edits: [{ oldText: "before", newText: "after" }] },
+			undefined,
+			{ cwd },
+			{ operations: localOperations({
+				readFile: async (target) => {
+					reads++;
+					if (reads === 2) await base.writeFile(target, "external\n");
+					return base.readFile(target);
+				},
+			}) },
+		)).rejects.toThrow(/target changed after it was read; no write was started/);
+		expect(await read(path)).toBe("external\n");
+	});
+
+	it("releases the queue after a failed write so a later edit can run", async () => {
+		const { name, path } = await setup("queue.txt", "before\n");
+		const first = executeBetterEdit(
+			{ path: name, edits: [{ oldText: "before", newText: "broken" }] },
+			undefined,
+			{ cwd },
+			{ operations: localOperations({ writeFile: async () => { throw new Error("injected"); } }) },
+		);
+		const second = run(name, [{ oldText: "before", newText: "after" }]);
+		const [firstResult, secondResult] = await Promise.allSettled([first, second]);
+		expect(firstResult.status).toBe("rejected");
+		expect(secondResult.status).toBe("fulfilled");
+		expect(await read(path)).toBe("after\n");
+	});
+
+	it.skipIf(process.platform === "win32")("preserves symlink identity by writing through it", async () => {
+		const { path } = await setup("target.txt", "before\n");
+		const alias = join(cwd, "alias.txt");
+		await symlink(path, alias);
+		await run("alias.txt", [{ oldText: "before", newText: "after" }]);
+		expect(await realpath(alias)).toBe(await realpath(path));
+		expect(await read(path)).toBe("after\n");
+	});
+
+	it("preserves hard-link semantics by writing the existing inode", async () => {
+		const { path } = await setup("hard-target.txt", "before\n");
+		const alias = join(cwd, "hard-alias.txt");
+		await link(path, alias);
+		await run("hard-alias.txt", [{ oldText: "before", newText: "after" }]);
+		expect(await read(path)).toBe("after\n");
+		expect((await stat(path)).ino).toBe((await stat(alias)).ino);
+	});
+});
+
+describe("encoding safety", () => {
+	it("edits valid non-ASCII UTF-8", async () => {
+		const { name, path } = await setup("unicode.txt", "café 東京\n");
+		await run(name, [{ oldText: "café", newText: "CAFÉ" }]);
+		expect(await read(path)).toBe("CAFÉ 東京\n");
+	});
+
+	it("rejects invalid UTF-8 without changing any bytes", async () => {
+		const { name, path } = await setup("invalid.bin", "placeholder");
+		const original = Buffer.from([0x61, 0x62, 0x63, 0x0a, 0xff, 0xfe, 0x0a]);
+		await writeFile(path, original);
+		await expect(run(name, [{ oldText: "abc", newText: "ABC" }])).rejects.toThrow(/not valid UTF-8/);
+		expect(await readFile(path)).toEqual(original);
+	});
+
+	it("rejects NUL-containing input without changing any bytes", async () => {
+		const { name, path } = await setup("nul.bin", "placeholder");
+		const original = Buffer.from("abc\0def", "utf8");
+		await writeFile(path, original);
+		await expect(run(name, [{ oldText: "abc", newText: "ABC" }])).rejects.toThrow(/contains NUL bytes/);
+		expect(await readFile(path)).toEqual(original);
 	});
 });
 
@@ -306,5 +482,13 @@ describe("prepareEditArguments compatibility shim", () => {
 	it("keeps invalid JSON untouched for schema validation", () => {
 		const out = prepareEditArguments({ path: "f", edits: "not json" });
 		expect(out).toEqual({ path: "f", edits: "not json" });
+	});
+
+	it("does not mutate input and is idempotent", () => {
+		const input = { path: "f", edits: { oldText: "a", newText: "b" } };
+		const first = prepareEditArguments(input) as BetterEditInput;
+		const second = prepareEditArguments(first);
+		expect(input.edits).toEqual({ oldText: "a", newText: "b" });
+		expect(second).toEqual(first);
 	});
 });

@@ -8,10 +8,9 @@
  *   prefix/suffix context expansion that makes that occurrence unique,
  *   rendered as a ready-to-use oldText snippet
  * - not-found oldText  → the closest matching region (fuzzy line similarity),
- *   a per-line comparison, and the exact file bytes to retry with
+ *   an original-text comparison, and exact LF-normalized retry text when safe
  */
 
-import { formatSize, truncateHead } from "@earendil-works/pi-coding-agent";
 import type { EditFailure, EditOp, LineRange } from "./apply.ts";
 import { normalizeEdits } from "./apply.ts";
 import { findClosestRegion, lineSimilarity, probeMatchCauses } from "./similarity.ts";
@@ -41,6 +40,8 @@ const MAX_OUTPUT_LINES = 1_500;
 const MAX_OUTPUT_BYTES = 48 * 1024;
 /** Minimum score at which a unique closest region may be suggested directly. */
 const MIN_DIRECT_RETRY_SCORE = 0.75;
+/** Required separation from a distinct runner-up before direct-retry wording. */
+const MIN_DIRECT_RETRY_GAP = 0.1;
 /** Max non-equal alignment ops rendered. */
 const MAX_DIFF_OPS_SHOWN = 12;
 
@@ -81,22 +82,32 @@ export function formatAutoDisambiguationSuccess(
 	newContent: string,
 	resolutions: AutoDisambiguation[],
 ): string {
-	if (resolutions.length === 0) return baseMessage;
+	if (resolutions.length === 0) return boundCompleteOutput(baseMessage);
 	const lines = [baseMessage, ""];
 	const shownResolutions = resolutions.slice(0, MAX_SUCCESS_RESOLUTIONS);
+	if (newContent.length > MAX_CONTENT_FOR_DIAGNOSTICS) {
+		for (const resolution of shownResolutions) {
+			lines.push(
+				`Auto-disambiguated edits[${resolution.editIndex}] to ${describeLines(resolution.chosenRange.start, resolution.chosenRange.end)} because it was the only occurrence fully contained in the latest verified read of ${describeLines(resolution.readRange.start, resolution.readRange.end)}.`,
+			);
+		}
+		lines.push("Remaining-occurrence snippets were omitted because the edited file exceeds the diagnostic analysis limit.");
+		return boundCompleteOutput(lines.join("\n"));
+	}
 
 	for (const resolution of shownResolutions) {
 		lines.push(
 			`Auto-disambiguated edits[${resolution.editIndex}] to ${describeLines(resolution.chosenRange.start, resolution.chosenRange.end)} because it was the only occurrence fully contained in the latest verified read of ${describeLines(resolution.readRange.start, resolution.readRange.end)}.`,
 		);
 		const oldText = normalizeToLF(resolution.oldText);
-		const offsets = findAllOccurrences(newContent, oldText);
-		if (offsets.length === 0) {
+		const remainingCount = countLiteralOccurrences(newContent, oldText);
+		const offsets = findAllOccurrences(newContent, oldText, MAX_REMAINING_OCCURRENCES);
+		if (remainingCount === 0) {
 			lines.push("No exact occurrences of the original oldText remain after this edit.", "");
 			continue;
 		}
 
-		lines.push(`Remaining exact occurrences of the original oldText (${Math.min(offsets.length, MAX_REMAINING_OCCURRENCES)} shown${offsets.length > MAX_REMAINING_OCCURRENCES ? `, ${offsets.length - MAX_REMAINING_OCCURRENCES} more omitted` : ""}):`);
+		lines.push(`Remaining exact occurrences of the original oldText (${offsets.length} shown${remainingCount > offsets.length ? `, ${remainingCount - offsets.length} more omitted` : ""}):`);
 		const fuzzyContent = normalizeForFuzzyMatch(newContent);
 		const spans = getLineSpans(newContent);
 		for (const [index, offset] of offsets.slice(0, MAX_REMAINING_OCCURRENCES).entries()) {
@@ -119,14 +130,11 @@ export function formatAutoDisambiguationSuccess(
 	if (resolutions.length > shownResolutions.length) {
 		lines.push(`${resolutions.length - shownResolutions.length} more auto-disambiguated edits were applied; details omitted.`);
 	}
-	return lines.join("\n").trimEnd();
+	return boundCompleteOutput(lines.join("\n").trimEnd());
 }
 
 export function formatEditFailure(opts: FormatFailureOptions): string {
-	const message = formatEditFailureUnbounded(opts);
-	const bounded = truncateHead(message, { maxBytes: MAX_OUTPUT_BYTES, maxLines: MAX_OUTPUT_LINES });
-	if (!bounded.truncated) return message;
-	return `${bounded.content}\n\n[Diagnostic output truncated to ${formatSize(bounded.outputBytes)} / ${bounded.outputLines} lines. Any incomplete snippet is not retryable; read the referenced range first.]`;
+	return boundCompleteOutput(formatEditFailureUnbounded(opts));
 }
 
 function formatEditFailureUnbounded(opts: FormatFailureOptions): string {
@@ -156,8 +164,8 @@ function formatEditFailureUnbounded(opts: FormatFailureOptions): string {
 		case "ambiguous": {
 			const head =
 				total === 1
-					? `Found ${failure.occurrenceOffsets.length} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`
-					: `Found ${failure.occurrenceOffsets.length} occurrences of edits[${failure.editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`;
+					? `Found ${failure.occurrenceCount} occurrences of the text in ${path}. The text must be unique. Please provide more context to make it unique.`
+					: `Found ${failure.occurrenceCount} occurrences of edits[${failure.editIndex}] in ${path}. Each oldText must be unique. Please provide more context to make it unique.`;
 			const body =
 				normalizedContent.length <= MAX_CONTENT_FOR_DIAGNOSTICS
 					? formatAmbiguous(opts, failure)
@@ -197,8 +205,8 @@ function formatAmbiguous(opts: FormatFailureOptions, failure: Extract<EditFailur
 		const range = rangeFromOffset(fuzzySpans, offset, fuzzyOld.length);
 		lines.push(`  ${i + 1}. ${describeLines(range.start, range.end)}`);
 	});
-	if (failure.occurrenceOffsets.length > listed.length) {
-		lines.push(`  … and ${failure.occurrenceOffsets.length - listed.length} more`);
+	if (failure.occurrenceCount > listed.length) {
+		lines.push(`  … and ${failure.occurrenceCount - listed.length} more`);
 	}
 	lines.push("");
 
@@ -257,6 +265,17 @@ function describeLines(start: number, end: number): string {
 
 function plural(n: number, noun: string): string {
 	return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+function countLiteralOccurrences(haystack: string, needle: string): number {
+	if (!needle) return 0;
+	let count = 0;
+	let index = haystack.indexOf(needle);
+	while (index !== -1) {
+		count++;
+		index = haystack.indexOf(needle, index + needle.length);
+	}
+	return count;
 }
 
 /**
@@ -353,9 +372,9 @@ function formatNotFound(opts: FormatFailureOptions, oldText: string): string {
 				);
 			}
 		} else {
-			lines.push(`Differences vs your oldText (${closest.equalCount} of ${closest.totalOldLines} compared lines match):`);
+			lines.push(`Differences vs your oldText (${closest.equalCount} of ${closest.totalOldLines} compared lines match exactly):`);
 			for (const op of diffOps.slice(0, MAX_DIFF_OPS_SHOWN)) {
-				if (op.type === "changed") {
+				if (op.type === "changed" || op.type === "similar") {
 					lines.push(`  file line ${op.fileLine} differs from your oldText line ${op.oldLine}:`);
 					lines.push(`    file:     ${truncateLine(op.fileText ?? "")}`);
 					lines.push(`    oldText:  ${truncateLine(op.oldText ?? "")}`);
@@ -375,9 +394,12 @@ function formatNotFound(opts: FormatFailureOptions, oldText: string): string {
 		const candidate = textFromLines(normalizedContent, closest.startLine, closest.endLine);
 		const uniqueCandidate = verifyUniqueSnippet(normalizeForFuzzyMatch(normalizedContent), candidate);
 		const safelyRenderable = isSnippetRenderable(uniqueCandidate ?? candidate);
+		const competitorGap = closest.competitor ? closest.score - closest.competitor.score : Number.POSITIVE_INFINITY;
 		const directRetry =
 			!closest.truncated &&
 			closest.score >= MIN_DIRECT_RETRY_SCORE &&
+			!closest.competitionIncomplete &&
+			competitorGap >= MIN_DIRECT_RETRY_GAP &&
 			uniqueCandidate !== null &&
 			safelyRenderable;
 		if (directRetry) {
@@ -389,6 +411,10 @@ function formatNotFound(opts: FormatFailureOptions, oldText: string): string {
 			const reasons = [
 				closest.truncated ? "only part of oldText was compared" : undefined,
 				closest.score < MIN_DIRECT_RETRY_SCORE ? "similarity confidence is too low" : undefined,
+				closest.competitionIncomplete ? "the bounded search discarded another competitively scored window" : undefined,
+				competitorGap < MIN_DIRECT_RETRY_GAP && closest.competitor
+					? `a distinct candidate at ${describeLines(closest.competitor.startLine, closest.competitor.endLine)} has a similar heuristic score (~${Math.round(closest.competitor.score * 100)}%)`
+					: undefined,
 				uniqueCandidate === null ? "the candidate is not unique under edit matching" : undefined,
 				!safelyRenderable ? "the exact candidate exceeds the safe output limit" : undefined,
 			].filter((reason): reason is string => reason !== undefined);
@@ -412,8 +438,85 @@ function formatNotFound(opts: FormatFailureOptions, oldText: string): string {
 }
 
 function truncateLine(line: string): string {
-	const collapsed = line.replace(/\t/g, "→tab→");
-	return collapsed.length > 120 ? `${collapsed.slice(0, 117)}…` : collapsed;
+	const visibleTrailing = line.replace(/[ \t]+$/, (suffix) =>
+		[...suffix].map((char) => (char === "\t" ? "→tab→" : "·")).join(""),
+	);
+	const visible = visibleTrailing.replace(/\t/g, "→tab→");
+	return visible.length > 120 ? `${visible.slice(0, 117)}…` : visible;
+}
+
+/**
+ * Enforce the complete output budget without ever cutting a generated fenced
+ * snippet. Oversized snippets are omitted atomically and clearly marked.
+ */
+function boundCompleteOutput(message: string): string {
+	const source = message.split("\n");
+	const output: string[] = [];
+	let bytes = 0;
+	let omitted = false;
+	const reservedBytes = 512;
+	const maxBodyBytes = MAX_OUTPUT_BYTES - reservedBytes;
+	const maxBodyLines = MAX_OUTPUT_LINES - 3;
+
+	const canAdd = (block: string[]) => {
+		const text = block.join("\n");
+		const addedBytes = Buffer.byteLength(text, "utf8") + (output.length > 0 ? 1 : 0);
+		return output.length + block.length <= maxBodyLines && bytes + addedBytes <= maxBodyBytes;
+	};
+	const add = (block: string[]) => {
+		const text = block.join("\n");
+		bytes += Buffer.byteLength(text, "utf8") + (output.length > 0 ? 1 : 0);
+		output.push(...block);
+	};
+
+	for (let index = 0; index < source.length; index++) {
+		const opener = source[index];
+		if (/^`{3,}$/.test(opener)) {
+			let closing = index + 1;
+			while (closing < source.length && source[closing] !== opener) closing++;
+			if (closing < source.length) {
+				const block = source.slice(index, closing + 1);
+				if (canAdd(block)) add(block);
+				else {
+					omitted = true;
+					const notice = ["[Exact fenced snippet omitted to keep the complete tool output within its byte/line budget.]" ];
+					if (canAdd(notice)) add(notice);
+				}
+				index = closing;
+				continue;
+			}
+		}
+
+		if (canAdd([opener])) {
+			add([opener]);
+			continue;
+		}
+		omitted = true;
+		const available = Math.max(0, maxBodyBytes - bytes - (output.length > 0 ? 1 : 0));
+		if (available > 4 && output.length < maxBodyLines) add([truncateUtf8(opener, available)]);
+		break;
+	}
+
+	if (omitted) {
+		const notice = "[Diagnostic output was bounded. Omitted fenced snippets are not retryable; read the referenced range first.]";
+		if (output.length > 0) output.push("");
+		output.push(notice);
+	}
+	return output.join("\n").trimEnd();
+}
+
+function truncateUtf8(text: string, maxBytes: number): string {
+	if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+	const suffix = "…";
+	const target = Math.max(0, maxBytes - Buffer.byteLength(suffix, "utf8"));
+	let low = 0;
+	let high = text.length;
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (Buffer.byteLength(text.slice(0, middle), "utf8") <= target) low = middle;
+		else high = middle - 1;
+	}
+	return `${text.slice(0, low)}${suffix}`;
 }
 
 // ---------------------------------------------------------------------------

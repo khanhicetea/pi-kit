@@ -1,3 +1,5 @@
+import { parseAdditionalArgs } from "./cli-args.ts";
+import { localForkSurface, type ToolSurface } from "./fork-surface.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DedeConfig } from "./config.ts";
 import type { ResolvedAgent } from "./types.ts";
@@ -8,16 +10,12 @@ export interface MasterForkSnapshot {
   entryId: string;
   systemPrompt: string;
   activeTools: string[];
+  surfaceFingerprint?: string;
+  surfaceReason?: string;
   contextTokens?: number;
   contextRatio?: number;
   model: string;
 }
-
-const PROMPT_SURFACE_ARGS = [
-  "-e", "--extension", "--no-extensions", "--system-prompt", "--append-system-prompt",
-  "--tools", "-t", "--exclude-tools", "-xt", "--no-tools", "-nt", "--no-builtin-tools", "-nbt",
-  "--model", "--provider", "--no-skills", "--no-context-files",
-] as const;
 
 function assistantHasToolCall(entry: any, toolCallId: string): boolean {
   if (entry?.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) return false;
@@ -31,6 +29,7 @@ export function captureMasterForkSnapshot(
   ctx: ExtensionContext,
   toolCallId: string,
   activeTools: readonly string[],
+  metadata?: readonly ToolSurface[],
 ): MasterForkSnapshot | undefined {
   const manager = ctx.sessionManager;
   if (typeof manager.getSessionFile !== "function" || typeof manager.getSessionId !== "function" || typeof manager.getEntries !== "function") return undefined;
@@ -42,7 +41,10 @@ export function captureMasterForkSnapshot(
   const usage = ctx.getContextUsage?.();
   const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
   if (!model) return undefined;
+  const surface = localForkSurface(ctx.cwd, activeTools, metadata);
   return {
+    surfaceFingerprint: surface.fingerprint,
+    surfaceReason: surface.reason,
     sessionId,
     sessionPath,
     entryId: callEntry.parentId,
@@ -58,7 +60,8 @@ function forkIneligibility(agent: ResolvedAgent, snapshot: MasterForkSnapshot | 
   if (!snapshot) return "the master session has no safe persistent fork point";
   if (!snapshot.systemPrompt) return "the effective master system prompt is unavailable";
   if (agent.model !== snapshot.model) return `the child model ${agent.model} differs from the master model ${snapshot.model}`;
-  if (agent.additionalArgs.some((arg) => PROMPT_SURFACE_ARGS.some((flag) => arg === flag || arg.startsWith(`${flag}=`)))) {
+  if (!snapshot.surfaceFingerprint) return snapshot.surfaceReason ?? "ordered tool metadata compatibility cannot be established";
+  if (parseAdditionalArgs(agent.additionalArgs).some((arg) => arg.changesSurface)) {
     return "child-specific additionalArgs alter the prompt, model, extension, or tool surface";
   }
   const missingTools = agent.tools.filter((tool) => !snapshot.activeTools.includes(tool));
@@ -97,6 +100,7 @@ export function resolveAgentContext(
     contextFallbackReason: undefined,
     visibleTools: [...source.activeTools],
     inheritedSystemPrompt: source.systemPrompt,
+    forkSurfaceFingerprint: source.surfaceFingerprint,
     cacheAffinityKey: source.sessionId,
     model: source.model,
     forkedFrom: {

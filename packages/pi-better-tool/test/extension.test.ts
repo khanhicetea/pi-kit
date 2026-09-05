@@ -23,8 +23,14 @@ describe("extension registration", () => {
 		expect(tool.description).toContain("recovery context");
 		expect(typeof tool.promptSnippet).toBe("string");
 		expect(Array.isArray(tool.promptGuidelines)).toBe(true);
-		expect((tool.promptGuidelines as unknown[]).length).toBeGreaterThanOrEqual(5);
+		const guidelines = tool.promptGuidelines as string[];
+		expect(guidelines.length).toBeGreaterThanOrEqual(5);
+		expect(guidelines.every((guideline) => guideline.includes("edit"))).toBe(true);
 		expect(tool.parameters).toBeDefined();
+		const schema = tool.parameters as { properties: { path: { minLength?: number }; edits: { minItems?: number; maxItems?: number } } };
+		expect(schema.properties.path.minLength).toBe(1);
+		expect(schema.properties.edits.minItems).toBe(1);
+		expect(schema.properties.edits.maxItems).toBe(100);
 		expect(typeof tool.prepareArguments).toBe("function");
 		expect(typeof tool.execute).toBe("function");
 		// no custom renderers: the built-in edit renderer is inherited

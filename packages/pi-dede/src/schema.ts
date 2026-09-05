@@ -1,3 +1,4 @@
+import { parseAdditionalArgs } from "./cli-args.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import {
@@ -65,7 +66,7 @@ const AgentSchema = Type.Object(
     })),
     model: Type.Optional(Type.String({
       minLength: 1,
-      description: "Omit to inherit the configured profile default (profiles.<profile>.model), falling back to the master's current model when no profile config is set. Set only to intentionally override with a specific model.",
+      description: "Auto/fork: omission retains the master's model, even when auto falls back to isolation. Explicit isolated: omission uses profiles.<profile>.model then the master model. Set a model only for an intentional override; use isolated for deliberate cheaper-profile routing.",
     })),
     thinking: Type.Optional(StringEnum(THINKING_LEVELS)),
     env: Type.Optional(Type.Record(
@@ -287,6 +288,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
         id: agent.id,
         goal: agent.goal,
         tools: [...source.agent.tools],
+        additionalArgs: [...source.agent.additionalArgs],
         visibleTools: source.agent.visibleTools ? [...source.agent.visibleTools] : undefined,
         env: { ...source.agent.env },
         timeoutSeconds,
@@ -321,6 +323,8 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
 
     const profileDefaults = context.profileDefaults?.[profile];
     const additionalArgs = profileDefaults?.additionalArgs ?? context.additionalArgs ?? [];
+    const parsedArgs = parseAdditionalArgs(additionalArgs);
+    const providerArg = parsedArgs.filter((arg) => arg.flag === "--provider").at(-1)?.value;
     const configuredEnv = profileDefaults?.env === undefined
       ? {}
       : validateChildEnv(profileDefaults.env, `profiles.${profile}.env`);
@@ -332,6 +336,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     const modelPattern = agent.model ?? (agent.contextMode === "isolated" ? profileDefaults?.model : undefined);
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
+    if (providerArg && providerArg !== model.provider) throw new Error(`additionalArgs --provider conflicts with resolved model ${model.provider}/${model.id}`);
     if (
       extensionProviders.has(model.provider) &&
       disablesChildExtensionDiscovery(additionalArgs) &&

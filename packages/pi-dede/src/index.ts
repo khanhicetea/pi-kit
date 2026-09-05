@@ -62,6 +62,16 @@ export default function dedeExtension(pi: ExtensionAPI): void {
   const processManager = new ChildProcessManager();
   const uiContexts = new Map<ExtensionContext, number>();
   const runDirectories = new Set<string>();
+  const executions = new Set<Promise<void>>();
+  const cleanupFailures: string[] = [];
+  const bestEffort = async (label: string, operation: () => unknown) => {
+    try { await operation(); } catch (error) {
+      const diagnostic = `${label}: ${String(error)}`;
+      cleanupFailures.push(diagnostic);
+      if (cleanupFailures.length > 20) cleanupFailures.shift();
+      console.error(`[pi-dede cleanup] ${diagnostic}`);
+    }
+  };
   let artifacts: ArtifactManager | undefined;
   let resumeStore: ChildResumeStore | undefined;
   let shuttingDown = false;
@@ -73,12 +83,18 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       queued ? `${queued} queued` : undefined,
     ].filter(Boolean);
     const status = parts.length ? `đệ · ${parts.join(" · ")}` : undefined;
-    for (const ctx of uiContexts.keys()) ctx.ui.setStatus("pi-dede", status);
+    for (const ctx of uiContexts.keys()) {
+      try { ctx.ui.setStatus("pi-dede", status); } catch { /* stale UI must not break scheduler ownership */ }
+    }
   };
-  const scheduler = new FifoSemaphore(MAX_AGENTS_PER_RUN, updateFooter);
+  let writerQueued = 0;
+  const scheduler = new FifoSemaphore(MAX_AGENTS_PER_RUN, (active, queued) => updateFooter(active, queued + writerQueued));
   // The schema limits writers per call; this runtime-wide lease also prevents
   // mutation-capable children in concurrent tool calls from clobbering a workspace.
-  const mutationScheduler = new FifoSemaphore(1);
+  const mutationScheduler = new FifoSemaphore(1, (_active, queued) => {
+    writerQueued = queued;
+    updateFooter(scheduler.active, scheduler.queued + queued);
+  });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     if (shuttingDown) return;
@@ -86,14 +102,15 @@ export default function dedeExtension(pi: ExtensionAPI): void {
     shutdownController.abort(abortError("Pi session shut down"));
     scheduler.cancelQueued("Pi session shut down");
     mutationScheduler.cancelQueued("Pi session shut down");
-    await processManager.killAll();
-    await Promise.all([...runDirectories].map((directory) => rm(directory, { recursive: true, force: true })));
+    await bestEffort("terminate children", () => processManager.killAll());
+    await Promise.allSettled([...executions]);
+    await Promise.all([...runDirectories].map((directory) => bestEffort("remove run directory", () => rm(directory, { recursive: true, force: true }))));
     runDirectories.clear();
-    await artifacts?.cleanup();
-    await resumeStore?.cleanup();
+    await bestEffort("remove artifacts", () => artifacts?.cleanup());
+    await bestEffort("close lineage store", () => resumeStore?.cleanup());
     unsettledResults.length = 0;
-    for (const ui of uiContexts.keys()) ui.ui.setStatus("pi-dede", undefined);
-    ctx.ui.setStatus("pi-dede", undefined);
+    for (const ui of uiContexts.keys()) await bestEffort("clear shutdown footer", () => ui.ui.setStatus("pi-dede", undefined));
+    await bestEffort("clear shutdown footer", () => ctx.ui.setStatus("pi-dede", undefined));
     uiContexts.clear();
   });
 
@@ -109,10 +126,16 @@ export default function dedeExtension(pi: ExtensionAPI): void {
     async execute(toolCallId, params: DedeDelegateInput, signal, onUpdate, ctx) {
       if (shuttingDown) throw abortError("Delegation runtime is shutting down");
 
+      let executionDone!: () => void;
+      const execution = new Promise<void>((resolve) => { executionDone = resolve; });
+      executions.add(execution);
+      try {
       // Configuration and semantic checks happen before temporary files, permits, or processes are created.
       const parentSessionId = sessionId(ctx);
       resumeStore ??= new ChildResumeStore();
       const config = await loadDedeConfig(ctx.cwd, ctx.isProjectTrusted());
+      if (shuttingDown || signal?.aborted) throw abortError();
+      processManager.assertLaunchAllowed();
       const validatedAgents = validateAndResolve(params, {
         model: ctx.model,
         models: ctx.modelRegistry.getAll(),
@@ -123,7 +146,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         resumeLookup: (handle) => resumeStore!.peek(handle, "resume"),
       });
       const activeTools = typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [];
-      const forkSnapshot = captureMasterForkSnapshot(ctx, toolCallId, activeTools);
+      const forkSnapshot = captureMasterForkSnapshot(ctx, toolCallId, activeTools, typeof pi.getAllTools === "function" ? pi.getAllTools() : undefined);
       const agents = validatedAgents.map((agent) => resolveAgentContext(agent, forkSnapshot, config));
 
       const runId = randomUUID();
@@ -159,10 +182,12 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           }
         }
         lastEmitAt = now;
-        onUpdate?.({
-          content: [{ type: "text", text: progressContent(details) }],
-          details: cloneDetails(details),
-        });
+        try {
+          onUpdate?.({
+            content: [{ type: "text", text: progressContent(details) }],
+            details: cloneDetails(details),
+          });
+        } catch (error) { console.error("[pi-dede progress]", error); }
       };
 
       const emit = () => {
@@ -212,6 +237,9 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           let mutationPermit;
           let lease: ChildLineageLease | undefined;
           let leaseHandled = false;
+          let launched = false;
+          const setupStartedAt = Date.now();
+          let queueStartedAt = setupStartedAt;
           const lineageHandle = agent.resume?.handle ?? agent.continueFrom?.handle;
           try {
             lease = lineageHandle
@@ -230,6 +258,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               addForkTaskContract(baseTask, agent),
             );
 
+            queueStartedAt = Date.now();
             if (agent.mutationCapable) mutationPermit = await mutationScheduler.acquire(combinedSignal);
             permit = await scheduler.acquire(combinedSignal);
             if (combinedSignal.aborted) throw abortError();
@@ -265,7 +294,9 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               signal: combinedSignal,
               manager: processManager,
               artifacts: artifacts!,
+              onLaunch: () => { launched = true; },
               onProgress: (text, protocol) => {
+                detailedUsages[index] = protocol.usage;
                 const childStartedAt = runningSince.get(index) ?? Date.now();
                 details.results[index] = {
                   ...details.results[index],
@@ -289,7 +320,14 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               },
             });
 
-            if (child.result.status === "timed_out") {
+            child.result.diagnostics = { ...child.result.diagnostics,
+              setupMs: queueStartedAt - setupStartedAt,
+              queueMs: (runningSince.get(index) ?? queueStartedAt) - queueStartedAt };
+            details.results[index] = child.result;
+            detailedUsages[index] = child.detailedUsage;
+            if (shuttingDown) {
+              await resumeStore!.discard(lease.handle);
+            } else if (child.result.status === "timed_out") {
               resumeStore!.markTimedOut(lease.handle, agent);
               child.result.resumeHandle = lease.handle;
               child.result.activity = [
@@ -317,13 +355,14 @@ export default function dedeExtension(pi: ExtensionAPI): void {
             let preservedResumeHandle: string | undefined;
             let preservedContinuationHandle: string | undefined;
             if (lease && !leaseHandled) {
-              if (lineageHandle) {
+              if (lineageHandle && !launched) {
                 resumeStore!.release(lease.handle);
                 if (lease.claimedAs === "resume") preservedResumeHandle = lease.handle;
                 else preservedContinuationHandle = lease.handle;
                 handledLineages.add(lineageHandle);
               } else {
                 await resumeStore!.discard(lease.handle);
+                if (lineageHandle) handledLineages.add(lineageHandle);
               }
               leaseHandled = true;
             }
@@ -347,7 +386,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
                 ...(lease ? { sessionId: lease.sessionId } : {}),
                 ...(preservedResumeHandle ? { resumeHandle: preservedResumeHandle } : {}),
                 ...(preservedContinuationHandle ? { continuationHandle: preservedContinuationHandle } : {}),
-                errorMessage: message,
+                errorMessage: launched ? `${message}; capability consumed because the task may have run; inspect session ${lease?.sessionId}` : message,
                 activity: [...details.results[index].activity, { type: "status" as const, text: "internal child error" }].slice(-100),
               };
             }
@@ -359,7 +398,16 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           }
         }));
 
-        if (combinedSignal.aborted) throw abortError();
+        if (combinedSignal.aborted) {
+          details.durationMs = Date.now() - startedAt;
+          details.status = "cancelled";
+          // Throwing is required for host error/cancellation semantics. Custom entries
+          // retain evidence, but Pi does not count their usage in tool totals.
+          await bestEffort("persist cancelled delegation", () => pi.appendEntry("pi-dede-cancelled", {
+            details: cloneDetails(details), usage: aggregateUsages(detailedUsages),
+          }));
+          throw abortError();
+        }
         details.durationMs = Date.now() - startedAt;
         details.status = deriveStatus(details.results);
         const finalDetails = cloneDetails(details);
@@ -383,14 +431,21 @@ export default function dedeExtension(pi: ExtensionAPI): void {
           if (!handledLineages.has(handle)) resumeStore!.release(handle);
         }
         if (runDirectory) {
-          runDirectories.delete(runDirectory);
-          await removeRunDirectory(runDirectory);
+          const directory = runDirectory;
+          await bestEffort("remove run directory", async () => {
+            await removeRunDirectory(directory);
+            runDirectories.delete(directory);
+          });
         }
         const remainingCalls = (uiContexts.get(ctx) ?? 1) - 1;
         if (remainingCalls <= 0) uiContexts.delete(ctx);
         else uiContexts.set(ctx, remainingCalls);
-        if (remainingCalls <= 0) ctx.ui.setStatus("pi-dede", undefined);
-        updateFooter(scheduler.active, scheduler.queued);
+        if (remainingCalls <= 0) await bestEffort("clear footer", () => ctx.ui.setStatus("pi-dede", undefined));
+        updateFooter(scheduler.active, scheduler.queued + mutationScheduler.queued);
+      }
+      } finally {
+        executionDone();
+        executions.delete(execution);
       }
     },
 

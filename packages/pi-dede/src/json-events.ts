@@ -19,7 +19,15 @@ function zeroDetailedUsage(): DetailedUsage {
 }
 
 export function sumUsage(target: DetailedUsage, usage: Partial<Usage> | undefined): void {
-  if (!usage) return;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
+  const finite = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+  usage = {
+    input: finite(usage.input), output: finite(usage.output),
+    cacheRead: finite(usage.cacheRead), cacheWrite: finite(usage.cacheWrite),
+    totalTokens: finite(usage.totalTokens),
+    cost: { input: finite(usage.cost?.input), output: finite(usage.cost?.output),
+      cacheRead: finite(usage.cost?.cacheRead), cacheWrite: finite(usage.cost?.cacheWrite), total: finite(usage.cost?.total) },
+  };
   target.input += usage.input ?? 0;
   target.output += usage.output ?? 0;
   target.cacheRead += usage.cacheRead ?? 0;
@@ -33,22 +41,20 @@ export function sumUsage(target: DetailedUsage, usage: Partial<Usage> | undefine
 }
 
 function object(value: unknown): Record<string, any> | undefined {
-  return value !== null && typeof value === "object" ? value as Record<string, any> : undefined;
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : undefined;
 }
 
 function textFromAssistant(message: Record<string, any>): string {
   if (!Array.isArray(message.content)) return "";
   return message.content
     .filter((part: unknown) => object(part)?.type === "text")
-    .map((part: unknown) => String(object(part)?.text ?? ""))
+    .map((part: unknown) => typeof object(part)?.text === "string" ? object(part)!.text : "")
     .join("\n");
 }
 
 function messageIdentity(message: Record<string, any>): string {
-  return String(
-    message.id ?? message.responseId ??
-    `${message.provider ?? ""}/${message.model ?? ""}/${message.timestamp ?? ""}/${message.stopReason ?? ""}/${message.usage?.input ?? ""}/${message.usage?.output ?? ""}`,
-  );
+  return JSON.stringify([message.id, message.responseId, message.provider, message.model,
+    message.timestamp, message.stopReason, message.usage?.input, message.usage?.output]);
 }
 
 function short(value: unknown, max = 120): string {
@@ -57,7 +63,7 @@ function short(value: unknown, max = 120): string {
 }
 
 function displayPath(value: unknown): string {
-  const raw = String(value ?? "");
+  const raw = typeof value === "string" ? value : "";
   const home = homedir();
   return raw.startsWith(home) ? `~${raw.slice(home.length)}` : raw;
 }
@@ -172,11 +178,32 @@ export class PiJsonCollector {
     if (!line.trim()) return;
     let event: Record<string, any>;
     try {
-      event = JSON.parse(line) as Record<string, any>;
+      const parsed: unknown = JSON.parse(line);
+      const record = object(parsed);
+      if (!record || typeof record.type !== "string" || !record.type.trim()) throw new Error("Invalid protocol event");
+      event = record;
     } catch {
       this.state.malformedLines++;
       if (this.state.malformedLines <= 3) this.addActivity("status", "ignored malformed protocol line");
       return;
+    }
+
+    const malformed = () => {
+      this.state.malformedLines++;
+      if (this.state.malformedLines <= 3) this.addActivity("status", "ignored malformed event fields");
+    };
+    if ((["message_start", "message_end"].includes(event.type) && !object(event.message)) ||
+        (event.type === "message_update" && !object(event.assistantMessageEvent)) ||
+        (event.type.startsWith("tool_execution_") && typeof event.toolName !== "string") ||
+        (event.type === "response" && (typeof event.command !== "string" || typeof event.success !== "boolean")) ||
+        (event.type === "extension_ui_request" && (typeof event.id !== "string" || typeof event.method !== "string"))) {
+      malformed(); return;
+    }
+    if (event.type === "message_end") {
+      const message = event.message;
+      if (["role", "provider", "model", "stopReason", "errorMessage"].some((key) => message[key] !== undefined && typeof message[key] !== "string")) {
+        malformed(); return;
+      }
     }
 
     switch (event.type) {
@@ -212,8 +239,8 @@ export class PiJsonCollector {
         }
         this.state.finalText = textFromAssistant(message);
         this.state.model = message.model ? `${message.provider ? `${message.provider}/` : ""}${message.model}` : this.state.model;
-        this.state.stopReason = message.stopReason ?? this.state.stopReason;
-        this.state.errorMessage = message.errorMessage ?? this.state.errorMessage;
+        if (typeof message.stopReason === "string") this.state.stopReason = message.stopReason;
+        if (typeof message.errorMessage === "string") this.state.errorMessage = message.errorMessage;
         this.partialText = "";
         this.onProgress?.("responded");
         break;

@@ -1,9 +1,10 @@
 /**
  * The "better edit" tool: a drop-in override of pi's built-in edit tool.
  *
- * Happy-path behavior is identical to the built-in tool (same schema, same
- * matching semantics, same result shapes so the built-in diff renderer is
- * inherited). The difference is failure behavior: instead of a bare "Could
+ * Normal matching closely tracks the built-in tool and keeps its success
+ * result shape so the built-in diff renderer is inherited. Conservative
+ * schema, encoding, read-evidence, and commit-boundary checks are intentional
+ * safety differences. Instead of a bare "Could
  * not find edits[1]" error that forces the model to re-read the file and
  * guess at larger context, failures include recovery context:
  *
@@ -22,8 +23,14 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { constants } from "node:fs";
-import { access as fsAccess, readFile as fsReadFile, realpath as fsRealpath, writeFile as fsWriteFile } from "node:fs/promises";
+import { constants, type Stats } from "node:fs";
+import {
+	access as fsAccess,
+	readFile as fsReadFile,
+	realpath as fsRealpath,
+	stat as fsStat,
+	writeFile as fsWriteFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,8 +61,10 @@ const replaceEditSchema = Type.Object({
 });
 
 export const betterEditSchema = Type.Object({
-	path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
+	path: Type.String({ minLength: 1, description: "Path to the file to edit (relative or absolute)" }),
 	edits: Type.Array(replaceEditSchema, {
+		minItems: 1,
+		maxItems: 100,
 		description:
 			"One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
 	}),
@@ -112,28 +121,26 @@ export function prepareEditArguments(input: unknown): unknown {
 		[path: string]: unknown;
 	};
 
-	if (typeof args.edits === "string") {
+	let preparedEdits = args.edits;
+	if (typeof preparedEdits === "string") {
 		try {
-			const parsed: unknown = JSON.parse(args.edits);
-			if (Array.isArray(parsed)) {
-				args.edits = parsed;
-			} else if (isSingleEditInput(parsed)) {
-				args.edits = [parsed];
-			}
+			const parsed: unknown = JSON.parse(preparedEdits);
+			if (Array.isArray(parsed)) preparedEdits = parsed;
+			else if (isSingleEditInput(parsed)) preparedEdits = [parsed];
 		} catch {
 			// leave as-is; schema validation will report it
 		}
-	} else if (isSingleEditInput(args.edits)) {
-		args.edits = [args.edits];
+	} else if (isSingleEditInput(preparedEdits)) {
+		preparedEdits = [preparedEdits];
 	}
 
 	if (typeof args.oldText === "string" && typeof args.newText === "string") {
-		const edits = Array.isArray(args.edits) ? [...(args.edits as EditOp[])] : [];
+		const edits = Array.isArray(preparedEdits) ? [...(preparedEdits as EditOp[])] : [];
 		edits.push({ oldText: args.oldText, newText: args.newText });
 		const { oldText: _oldText, newText: _newText, ...rest } = args;
 		return { ...rest, edits };
 	}
-	return args;
+	return preparedEdits === args.edits ? args : { ...args, edits: preparedEdits };
 }
 
 export interface BetterEditSuccess {
@@ -141,39 +148,108 @@ export interface BetterEditSuccess {
 	details: EditToolDetails;
 }
 
+export interface BetterEditOperations {
+	access(path: string): Promise<void>;
+	readFile(path: string): Promise<Buffer>;
+	realpath(path: string): Promise<string>;
+	stat(path: string): Promise<Stats>;
+	writeFile(path: string, content: string): Promise<void>;
+}
+
+const defaultOperations: BetterEditOperations = {
+	access: (path) => fsAccess(path, constants.R_OK | constants.W_OK),
+	readFile: (path) => fsReadFile(path),
+	realpath: (path) => fsRealpath(path),
+	stat: (path) => fsStat(path),
+	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
+};
+
+export interface BetterEditExecutionOptions {
+	operations?: BetterEditOperations;
+	/** Test/integration seam; runs before the write commit boundary. */
+	formatSuccess?: typeof formatAutoDisambiguationSuccess;
+}
+
+function describeFsError(error: unknown): string {
+	return error instanceof Error && "code" in error
+		? `Error code: ${(error as NodeJS.ErrnoException).code}`
+		: error instanceof Error
+			? error.message
+			: String(error);
+}
+
+function sameFileIdentity(a: Stats, b: Stats): boolean {
+	return a.dev === b.dev && a.ino === b.ino;
+}
+
+function decodeEditableUtf8(buffer: Buffer, path: string): string {
+	try {
+		new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+	} catch {
+		throw new Error(`Could not edit file: ${path}. The file is not valid UTF-8; unsupported encodings are never transcoded.`);
+	}
+	if (buffer.includes(0)) {
+		throw new Error(`Could not edit file: ${path}. The file contains NUL bytes and is treated as binary or an unsupported text encoding.`);
+	}
+	return buffer.toString("utf-8");
+}
+
+function countLiteralOccurrences(haystack: string, needle: string): number {
+	if (!needle) return 0;
+	let count = 0;
+	let index = haystack.indexOf(needle);
+	while (index !== -1) {
+		count++;
+		index = haystack.indexOf(needle, index + needle.length);
+	}
+	return count;
+}
+
 export async function executeBetterEdit(
 	input: BetterEditInput,
 	signal: AbortSignal | undefined,
 	ctx: Pick<ExtensionContext, "cwd"> & Partial<Pick<ExtensionContext, "sessionManager">>,
+	options: BetterEditExecutionOptions = {},
 ): Promise<BetterEditSuccess> {
 	const edits: EditOp[] = input.edits ?? [];
-	if (!Array.isArray(edits) || edits.length === 0) {
-		throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
+	if (!input.path || !Array.isArray(edits) || edits.length === 0 || edits.length > 100) {
+		throw new Error("Edit tool input is invalid. path must be non-empty and edits must contain 1-100 replacements.");
 	}
 	const absolutePath = resolveToCwd(input.path, ctx.cwd);
+	const ops = options.operations ?? defaultOperations;
+	const formatSuccess = options.formatSuccess ?? formatAutoDisambiguationSuccess;
 
 	return withFileMutationQueue(absolutePath, async () => {
-		// Do not reject from an abort event listener here: that would release the
-		// mutation queue while an in-flight filesystem operation may still finish.
+		// Never reject from an abort listener: the queue must remain held until
+		// in-flight filesystem work settles.
 		const throwIfAborted = () => {
-			if (signal?.aborted) throw new Error("Operation aborted");
+			if (signal?.aborted) throw new Error("Operation aborted before the edit was committed; no write was started.");
 		};
 		throwIfAborted();
 
 		try {
-			await fsAccess(absolutePath, constants.R_OK | constants.W_OK);
+			await ops.access(absolutePath);
 		} catch (error) {
 			throwIfAborted();
-			const errorMessage =
-				error instanceof Error && "code" in error
-					? `Error code: ${(error as NodeJS.ErrnoException).code}`
-					: String(error);
-			throw new Error(`Could not edit file: ${input.path}. ${errorMessage}.`);
+			throw new Error(`Could not access file for editing: ${input.path}. ${describeFsError(error)}. No write was started.`);
 		}
 		throwIfAborted();
 
-		const buffer = await fsReadFile(absolutePath);
-		const rawContent = buffer.toString("utf-8");
+		let buffer: Buffer;
+		let initialStat: Stats;
+		try {
+			const beforeReadStat = await ops.stat(absolutePath);
+			buffer = await ops.readFile(absolutePath);
+			initialStat = await ops.stat(absolutePath);
+			if (!sameFileIdentity(beforeReadStat, initialStat)) throw new Error("target-changed-during-read");
+		} catch (error) {
+			throwIfAborted();
+			if (error instanceof Error && error.message === "target-changed-during-read") {
+				throw new Error(`Could not edit file: ${input.path}. The target identity changed while it was being read; no write was started. Re-read and retry.`);
+			}
+			throw new Error(`Could not read file for editing: ${input.path}. ${describeFsError(error)}. No write was started.`);
+		}
+		const rawContent = decodeEditableUtf8(buffer, input.path);
 		throwIfAborted();
 
 		const { bom, text: content } = splitBom(rawContent);
@@ -193,17 +269,23 @@ export async function executeBetterEdit(
 			const editIndex = result.failure.editIndex;
 			if (selections.has(editIndex)) break;
 			const edit = normalizedEdits[editIndex];
-			const exactOffsets = findAllOccurrences(normalizedContent, edit.oldText);
+			const exactCount = countLiteralOccurrences(normalizedContent, edit.oldText);
+			const exactOffsets = findAllOccurrences(normalizedContent, edit.oldText, 256);
 			// Fuzzy-equivalent aliases cannot be mapped safely to original offsets.
-			if (exactOffsets.length !== result.failure.occurrenceOffsets.length) break;
+			if (exactCount !== result.failure.occurrenceCount) break;
 
 			if (readEvidence === undefined) {
-				const canonicalTarget = await fsRealpath(absolutePath);
+				let canonicalTarget: string;
+				try {
+					canonicalTarget = await ops.realpath(absolutePath);
+				} catch (error) {
+					throw new Error(`Could not resolve edit target: ${input.path}. ${describeFsError(error)}. No write was started.`);
+				}
 				readEvidence = await findLatestReadEvidence(
 					ctx.sessionManager,
 					canonicalTarget,
 					normalizedContent,
-					async (readPath) => fsRealpath(resolveToCwd(readPath, ctx.cwd)),
+					async (readPath) => ops.realpath(resolveToCwd(readPath, ctx.cwd)),
 				);
 			}
 			if (!readEvidence) break;
@@ -231,75 +313,91 @@ export async function executeBetterEdit(
 		}
 
 		if (!result.ok) {
-			throw new Error(
-				formatEditFailure({
-					path: input.path,
-					normalizedContent,
-					edits,
-					failure: result.failure,
-				}),
-			);
+			throw new Error(formatEditFailure({ path: input.path, normalizedContent, edits, failure: result.failure }));
 		}
 
 		const { baseContent, newContent } = applyAnalysis(normalizedContent, result.analysis);
 		if (baseContent === newContent) {
-			throw new Error(
-				formatEditFailure({
-					path: input.path,
-					normalizedContent,
-					edits,
-					failure: { kind: "no-change" },
-				}),
-			);
+			throw new Error(formatEditFailure({
+				path: input.path,
+				normalizedContent,
+				edits,
+				failure: { kind: "no-change" },
+			}));
+		}
+
+		// Prepare every required success artifact before crossing the write
+		// boundary. Optional diagnostics are bounded and cannot fail after commit.
+		const finalContent = bom + restoreLineEndings(newContent, originalEnding);
+		const diffResult = generateDiffString(baseContent, newContent);
+		const success: BetterEditSuccess = {
+			content: [{
+				type: "text",
+				text: formatSuccess(
+					`Successfully replaced ${edits.length} block(s) in ${input.path}.`,
+					newContent,
+					resolutions,
+				),
+			}],
+			details: {
+				diff: diffResult.diff,
+				patch: generateUnifiedPatch(input.path, baseContent, newContent),
+				firstChangedLine: diffResult.firstChangedLine,
+			},
+		};
+		throwIfAborted();
+
+		// Best-effort external modification detection. This is not a lock or a
+		// race-free compare-and-swap; another process can still change the target
+		// after this check and before/during the write.
+		try {
+			const [currentBuffer, currentStat] = await Promise.all([
+				ops.readFile(absolutePath),
+				ops.stat(absolutePath),
+			]);
+			if (!sameFileIdentity(initialStat, currentStat) || !buffer.equals(currentBuffer)) {
+				throw new Error("target-changed");
+			}
+		} catch (error) {
+			throwIfAborted();
+			if (error instanceof Error && error.message === "target-changed") {
+				throw new Error(`Could not edit file: ${input.path}. The target changed after it was read; no write was started. Re-read and retry.`);
+			}
+			throw new Error(`Could not revalidate file before writing: ${input.path}. ${describeFsError(error)}. No write was started.`);
 		}
 		throwIfAborted();
 
-		const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-		await fsWriteFile(absolutePath, finalContent, "utf-8");
-		throwIfAborted();
-
-		const diffResult = generateDiffString(baseContent, newContent);
-		const patch = generateUnifiedPatch(input.path, baseContent, newContent);
-		return {
-			content: [
-				{
-					type: "text",
-					text: formatAutoDisambiguationSuccess(
-						`Successfully replaced ${edits.length} block(s) in ${input.path}.`,
-						newContent,
-						resolutions,
-					),
-				},
-			],
-			details: {
-				diff: diffResult.diff,
-				patch,
-				firstChangedLine: diffResult.firstChangedLine,
-			} satisfies EditToolDetails,
-		};
+		try {
+			await ops.writeFile(absolutePath, finalContent);
+		} catch (error) {
+			throw new Error(`Could not complete write to ${input.path}. ${describeFsError(error)}. The file may be unchanged, partially written, or fully written; inspect it before retrying.`);
+		}
+		// A resolved write is the commit boundary. Ignore cancellation that arrived
+		// during it and report the committed result; no fallible formatting remains.
+		return success;
 	});
 }
 
-export function registerBetterEditTool(pi: ExtensionAPI): void {
+export function registerBetterEditTool(pi: ExtensionAPI, options: BetterEditExecutionOptions = {}): void {
 	pi.registerTool({
 		name: "edit",
 		label: "edit",
 		description:
-			"Edit a single file using exact text replacement. Every edits[].oldText should match a unique, non-overlapping region of the original file. When literal text is repeated, edit may safely select it only if exactly one occurrence was fully shown by the latest verified read of that file; the success result then includes up to four remaining disambiguated candidates. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes. On failure the error includes recovery context (closest matching region or per-occurrence disambiguation snippets) so you can retry immediately without re-reading the file.",
+			"Edit a single local file using exact text replacement. Every edits[].oldText should match a unique, non-overlapping region of the original file. Repeated literal text is selected only when exactly one tracked occurrence is contained in the latest verified stored-context read. Failures include bounded recovery context; low-confidence, non-unique, omitted, or stale candidates require a read before retrying.",
 		promptSnippet:
-			"Make precise file edits with exact text replacement; failures return recovery context (closest match or disambiguation snippets)",
+			"Make precise local file edits with exact text replacement; failures return bounded recovery context",
 		promptGuidelines: [
-			"Use edit for precise changes (edits[].oldText must match exactly)",
-			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-			"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-			"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
-			"When edit safely auto-disambiguates repeated text from the latest verified read, its success message lists up to four remaining occurrences with effective prefix/suffix context for an optional follow-up edit.",
-			"When an edit call fails, the error message already contains recovery context: the closest matching region with exact file bytes (not-found) or each occurrence with a ready-to-use disambiguated oldText (ambiguous match). Retry the edit using that text directly instead of re-reading the file.",
+			"Use edit for precise changes (edits[].oldText must match exactly).",
+			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls.",
+			"In edit, each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits; merge nearby changes into one edit.",
+			"Keep edit edits[].oldText as small as possible while still being unique in the file; do not pad with large unchanged regions.",
+			"When edit safely auto-disambiguates repeated text from the latest verified stored-context read, its success message lists bounded remaining candidates for an optional follow-up edit.",
+			"When edit fails, reuse only a fenced snippet explicitly marked retryable. If edit reports low confidence, competing candidates, omitted output, stale evidence, or a write that may have modified the file, read the referenced file/range before retrying.",
 		],
 		parameters: betterEditSchema,
 		prepareArguments: (args: unknown): BetterEditInput => prepareEditArguments(args) as BetterEditInput,
 		async execute(_toolCallId, input, signal, _onUpdate, ctx) {
-			return executeBetterEdit(input, signal, ctx);
+			return executeBetterEdit(input, signal, ctx, options);
 		},
 	});
 }
