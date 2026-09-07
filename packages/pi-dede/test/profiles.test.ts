@@ -70,6 +70,12 @@ describe("profile prompts", () => {
     expect(prompt).toContain("Answer one bounded repository question");
     expect(prompt).toContain("Do not add recommendations, implementation plans");
     expect(prompt).not.toContain("## Files Changed");
+    for (const contract of [prompt, addForkTaskContract("task", { ...scout, resolvedContextMode: "fork" })]) {
+      expect(contract).toContain("inclusive 1-based line-from–line-to range");
+      expect(contract).toContain("Copy short fenced code blocks verbatim");
+      expect(contract).toContain("excluded from this word count");
+      expect(contract).toContain("60 code lines total");
+    }
   });
 
   it("separates the master-owned objective, bounded assignment, and concise context", () => {

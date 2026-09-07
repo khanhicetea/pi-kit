@@ -10,13 +10,83 @@ import { cloneDetails, deriveStatus, formatModelContent, formatSettledSummary, p
 import { renderDedeCall, renderDedeResult } from "./render.ts";
 import { ChildResumeStore, type ChildLineageLease } from "./resume.ts";
 import { ArtifactManager, ChildProcessManager, createSecureRunDirectory, removeRunDirectory, runChild, writeSecurePrompt } from "./runner.ts";
-import { type DedeDelegateInput, MAX_AGENTS_PER_RUN, validateAndResolve } from "./schema.ts";
+import { MAX_CHILD_TIMEOUT_SECONDS, MAX_RESUME_TIMEOUT_SECONDS, type DedeDelegateInput, MAX_AGENTS_PER_RUN, validateAndResolve } from "./schema.ts";
 import { abortError, FifoSemaphore } from "./scheduler.ts";
 import { DEDE_TOOL_METADATA } from "./tool-definition.ts";
 import type { DedeChildResult, DedeToolDetails, DetailedUsage, ResolvedAgent } from "./types.ts";
 
 const PROGRESS_THROTTLE_MS = 200;
 const PROGRESS_HEARTBEAT_MS = 1000;
+
+interface TimeoutExtensionDialog {
+  agentId: string;
+  extensionSeconds: number;
+  expiresAt: number;
+  signal: AbortSignal;
+  settle(value: boolean): void;
+}
+
+/** Serializes extension dialogs because Pi has one active extension selector at a time. */
+class TimeoutExtensionDialogQueue {
+  private readonly queued: TimeoutExtensionDialog[] = [];
+  private showing = false;
+
+  constructor(private readonly ctx: ExtensionContext) {}
+
+  request(agentId: string, extensionSeconds: number, remainingMs: number, signal: AbortSignal): Promise<boolean> {
+    if (!this.ctx.hasUI || signal.aborted) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let request!: TimeoutExtensionDialog;
+      const settle = (value: boolean) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        const index = this.queued.indexOf(request);
+        if (index >= 0) this.queued.splice(index, 1);
+        resolve(value);
+      };
+      const onAbort = () => settle(false);
+      request = {
+        agentId,
+        extensionSeconds,
+        expiresAt: Date.now() + remainingMs,
+        signal,
+        settle,
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.queued.push(request);
+      void this.showNext();
+    });
+  }
+
+  private async showNext(): Promise<void> {
+    if (this.showing) return;
+    const request = this.queued.shift();
+    if (!request) return;
+    if (request.signal.aborted || request.expiresAt <= Date.now()) {
+      request.settle(false);
+      void this.showNext();
+      return;
+    }
+
+    this.showing = true;
+    try {
+      const remainingMs = Math.max(1, request.expiresAt - Date.now());
+      const confirmed = await this.ctx.ui.confirm(
+        "Extend subagent timeout?",
+        `${request.agentId} has about ${Math.max(1, Math.ceil(remainingMs / 1000))}s left. Extend its timeout by ${request.extensionSeconds}s?`,
+        { signal: request.signal, timeout: remainingMs },
+      );
+      request.settle(confirmed);
+    } catch {
+      request.settle(false);
+    } finally {
+      this.showing = false;
+      void this.showNext();
+    }
+  }
+}
 
 function queuedResult(agent: ResolvedAgent): DedeChildResult {
   return {
@@ -168,6 +238,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
       const combinedSignal = signal
         ? AbortSignal.any([signal, shutdownController.signal])
         : shutdownController.signal;
+      const timeoutExtensionDialogs = new TimeoutExtensionDialogQueue(ctx);
       let lastEmitAt = 0;
       let pendingEmit: ReturnType<typeof setTimeout> | undefined;
 
@@ -291,6 +362,20 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               parentSessionId,
               additionalArgs: agent.additionalArgs,
               timeoutSeconds: agent.timeoutSeconds,
+              maximumTimeoutSeconds: agent.resume ? MAX_RESUME_TIMEOUT_SECONDS : MAX_CHILD_TIMEOUT_SECONDS,
+              onTimeoutExtensionRequest: ({ extensionSeconds, remainingMs, signal: dialogSignal }) =>
+                timeoutExtensionDialogs.request(agent.id, extensionSeconds, remainingMs, dialogSignal),
+              onTimeoutExtended: (timeoutSeconds) => {
+                details.results[index] = {
+                  ...details.results[index],
+                  timeoutSeconds,
+                  activity: [
+                    ...details.results[index].activity,
+                    { type: "status" as const, text: `timeout extended to ${timeoutSeconds}s` },
+                  ].slice(-100),
+                };
+                emit();
+              },
               signal: combinedSignal,
               manager: processManager,
               artifacts: artifacts!,

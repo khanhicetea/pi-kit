@@ -18,18 +18,12 @@ describe("extension registration", () => {
     expect(tool.promptSnippet).toContain("continue a related finished child");
     expect(tool.promptSnippet).toContain("resume a timed-out child");
     const guidance = tool.promptGuidelines.join("\n");
-    expect(guidance).toContain("first-pass repository orientation");
-    expect(guidance).toContain("planning, synthesis");
-    expect(guidance).toContain("two local tool calls");
-    expect(guidance).toContain("cloned prompts");
-    expect(guidance).toContain("compact contract");
-    expect(guidance).toContain("success criteria");
-    expect(guidance).toContain("master");
-    expect(guidance).toContain("agents[].continueFrom");
-    expect(guidance).toContain("revalidate mutable repository state");
-    expect(guidance).toContain("30-180 second extension");
-    expect(guidance).toContain("do not restart completed work or resume blindly");
-    expect(guidance).not.toContain("dependsOn");
+    expect(tool.promptGuidelines).toEqual([
+      "Read the subagents skill before using delegate_to_subagents.",
+    ]);
+    // Orchestration policy loads on demand; keep always-on metadata compact.
+    expect(guidance.length).toBeLessThan(100);
+    expect(tool.description.length + tool.promptSnippet.length + guidance.length).toBeLessThan(500);
     expect(tool.parameters.properties.agents.maxItems).toBe(3);
     expect(tool.parameters.properties.agents.items.properties.dependsOn).toBeUndefined();
     expect(tool.parameters.properties.agents.items.properties.continueFrom).toMatchObject({ type: "string", maxLength: 128 });

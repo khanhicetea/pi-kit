@@ -1,88 +1,85 @@
 ---
 name: subagents
-description: Delegate bounded work to Pi sub-agents with delegate_to_subagents using automatic master-context forks or isolated starts. Use when a parent agent needs bounded parallel evidence, one focused review, one approved implementation worker, a related continuation of a successful child, or a deliberate short resume after timeout.
+description: Delegate bounded work to Pi sub-agents, including cheap early scouting from AGENTS.md with exact code evidence. Load before using delegate_to_subagents for scouting, parallel investigation, focused review, approved changes, or continuation/resume.
 ---
 
 # Subagents
 
-This skill is for the **master/parent agent only**. The master owns scope, decisions, synthesis, verification, and the final answer. Children return untrusted evidence or execute one approved change; they do not become co-orchestrators.
+For the **master/parent agent only**. The master owns decomposition, planning, decisions, synthesis, verification, and the final answer. Children answer one bounded question or execute one approved change; they are not co-orchestrators.
 
-## Delegation gate
+## 1. Decide whether to delegate
 
-Delegate only when all are true:
+Establish a bounded scope first; implementation-file inspection is not a prerequisite. Reading the project's AGENTS.md or another trusted project map can be enough to name the question, starting directory/feature, required evidence, and stop condition. Treat mapped paths as starting hints, not proof of current behavior.
 
-1. You personally inspected enough source material to identify the exact uncertainty or approved change.
-2. A child can receive one bounded contract with a clear completion boundary.
-3. Delegation adds leverage beyond roughly two local tool calls.
-4. Parallel lanes are genuinely independent: at most one approved writer, with any read-only lanes using disjoint scopes and revalidating mutable state.
+Prefer a cheap, fast early scout when that map supports a small search-and-extract task that would otherwise consume master exploration/context. Use explicit `isolated`, a configured cheaper scout model, low thinking, and a 60-second ceiling. Pass only the relevant project rules and scope. The same scout locates, reads, and returns useful code evidence in one assignment; do not launch another child merely to extract or reformat its findings.
 
-Do not delegate first-pass orientation, one symbol lookup, planning, synthesis, or vague work such as “review the project.”
+Use direct tools for an already-known read, single lookup, or command when delegation overhead outweighs the work (often about two local tool calls). Avoid unbounded first-pass repository orientation, planning, synthesis, and vague requests such as “review the project.”
 
-## Choose the economical route
+Compare total setup, child input/cache/output, handoff, verification, likely repair, and critical-path latency against doing the work yourself. Do not add a routing model call, automatic retry, or escalation. Do not delegate just to fill available slots.
 
-- Known file read, grep, or one authorized command: direct tools; batch already-grounded independent calls.
-- Bounded multi-step failure classification or contract checking: explicit `contextMode: "isolated"` with a user-configured cheaper profile model.
-- Evidence requiring substantial prior reasoning/history: same-model `auto`/`fork`, when compatibility can be established.
-- Architecture, high-risk ambiguity, and synthesis: master-owned; delegate only separable evidence.
+## 2. Choose context and capabilities
 
-Compare total expected setup + child input/cache/output + handoff/verification + likely repair against direct master work, and compare critical-path latency. A tiny isolated task can cost less than a large cached fork. No model-powered routing step, hard-coded price rankings, automatic retries, or escalation.
+The tool schema defines argument syntax, defaults, and limits. Use these decision rules:
 
-Omitting `model` in auto/fork retains the master model even after auto falls back to isolation. Profile model defaults apply only to explicit isolation. Use 60-second execution ceilings for selected microtasks, adequate low thinking, and 100–200-word evidence targets within the 400-word cap. Setup, queue, and disposal add time. Group similar-duration children; the slowest sibling holds the synchronous result. Emit independent master tool work as siblings only where the host actually supports concurrency.
-
-Returning quickly may help parent cache retention, but providers control eviction and keys. Child fork cache reuse, child continuation reuse, and parent-next-request reuse are separate observations, not guarantees. Start fresh for unrelated work.
-
-## Build a compact contract
-
-For each child, provide:
-
-- **Outcome:** one question or deliverable.
-- **Scope/seam:** named files, symbols, diff, behavior, or starting point, plus a narrow dependency radius when needed.
-- **Evidence:** what the child must return, such as line references, failure modes, or command outcomes.
-- **Constraints:** only true invariants; avoid long procedural scripts.
-- **Stop condition:** when enough evidence exists or the bounded change is complete.
-
-For read-only discovery, ask for evidence status (`answered`, `partial`, or `blocked`), one bounded finding, one to three decisive references, the exact inspected scope, and only consequential unknowns. This evidence status is separate from runtime execution status and remains untrusted until the master verifies consequential spans.
-
-Set `objective` to the decision or outcome the master will own. Put only verified facts and relevant trusted repository rules in `sharedContext`.
-
-For each new child, choose `contextMode` deliberately when the default `auto` is not enough:
-
-- use `fork` when decisions, discoveries, terminology, or constraints already established in the master conversation materially help the lane;
-- use `isolated` for clean-room evidence, minimal conversation disclosure, a deliberately different model, or a tiny independent task;
-- omit it or use `auto` when pi-dede should select a cache-compatible fork only when its context economics permit one.
-
-Forks require locally verifiable ordered tool metadata; extension/SDK tools can cause auto fallback or forced-fork rejection. Prefix compatibility is best-effort: host context/provider hooks are not reproduced or fully observable. Pi-dede blocks execution outside the profile/tool subset. Do not widen `tools` merely because the definitions are already visible.
-
-Before parallel fanout, compare the contracts. Do not send clone prompts with only labels, issue numbers, or broad paths swapped. Every lane must remain distinct without its id.
-
-## Choose a specialty
-
-Use `scout` for code relationships, `reviewer` for correctness, `debugger` for root-cause evidence, and `security` for one trust boundary. These default to read-only. Use `tester` for focused validation or explicitly approved test edits, `documenter` for approved documentation updates, and `worker` for implementation. These default to coding and each consumes the sole writer slot; never pair a tester with another writer. Use a read-only tool override for static test or documentation analysis. `custom` remains the escape hatch for other narrow specialties. Profiles do not grant permission beyond the assignment.
-
-## Choose the run shape
-
-| Need | Shape |
+| Need | Choice |
 | --- | --- |
-| Two or three independent questions | Parallel read-only `scout`, `reviewer`, or `custom` children |
-| One bounded second opinion | One read-only `reviewer` or `custom` child |
-| One approved code change | One `worker` (optionally alongside read-only scouts); writers are serialized across concurrent runs |
-| New task directly related to a finished child | `continueFrom` its handle; keep its role/capabilities and provide only new facts |
-| Finish near-complete timed-out work | One solo `resume` with only what remains and a 30–180 second deadline |
+| Independent multi-step reasoning with a configured cheaper profile | Explicit `isolated`; omit `model` to use the profile default |
+| Substantial prior decisions or reasoning must carry over | Same-model `fork` |
+| Let pi-dede choose a compatible, economical context | Default `auto` |
+| Clean-room evidence, minimal disclosure, or a deliberately different model | Explicit `isolated` |
 
-A run allows at most one mutation-capable child; it may run alongside read-only agents, while a runtime-wide lease serializes writers from concurrent calls. Do not create extra lanes merely to use all three slots. The writer lease coordinates only children in this extension runtime, not master edits, other Pi processes, or external editors. A check using bash still takes the sole writer lease; never pair a tester with another writer.
+Omit `model` for auto/fork to retain the master model, including after auto falls back to isolation. Profile model defaults apply only to explicit isolation. A different explicit model makes auto fall back to isolation.
 
-## Reuse an existing child lineage
+Fork requires compatible ordered tool metadata; extension/SDK tools can cause fallback or forced-fork rejection. Provider/context hooks are not fully observable. Child fork reuse, continuation reuse, and parent cache retention are separate, best-effort observations—not guarantees. Do not widen child tools merely because their definitions are visible in inherited context.
 
-A successful result may include `continuationHandle`. Use it only when the new bounded task directly benefits from that child's existing context. This is the same logical child even when the new invocation uses another display `id`: its profile, system prompt, model, thinking, environment, and tools remain fixed. Put only new verified facts in `sharedContext`, and require workers or scouts to re-read mutable files, diffs, or tests before relying on earlier observations.
+Choose the least-capable profile/tool set that can finish the assignment:
 
-`continueFrom` is not a handoff to a different role and not a substitute for a fresh independent lane. It uses the normal 30–1800 second budget and may run with other independent children. If it times out, inspect the partial result before using the returned short `resume` handle. Never pass a raw `sessionId` as a capability.
+- **Read-only by default:** `scout` maps code, `reviewer` checks correctness, `debugger` establishes root cause, `security` traces one trust boundary, `custom` handles another narrow specialty.
+- **Coding by default:** `worker` implements, `tester` validates or edits approved tests, `documenter` updates approved docs. Use a read-only override for static test/documentation analysis.
+- Any `bash`, `edit`, or `write` capability consumes the sole writer slot—even bash used only for checks. Profiles do not authorize work outside the assignment.
 
-## After children return
+For selected microtasks, use a 60-second execution ceiling, adequate low thinking, and a 100–200-word evidence target. Setup, queue, and disposal add time; the execution deadline is not a total-return deadline. Group similar-duration siblings rather than adding a slow lane.
 
-1. Compare results against each other and the master-owned objective.
-2. Verify consequential claims directly in source, tests, docs, or command output.
-3. Resolve disagreement yourself; source evidence outranks child confidence.
-4. Synthesize the answer or approve one concrete worker plan.
-5. For worker results, inspect the diff and check reported validation before declaring completion.
+## 3. Write the contract
 
-Read [references/recipes.md](references/recipes.md) for call patterns, lane design, and anti-pattern repairs.
+Set `objective` to the decision or outcome **you** will own. Put concise verified facts and relevant trusted project rules in `sharedContext`, not a transcript dump or broad repository context. Use `systemPrompt` for specialty constraints, not project rules.
+
+Each `goal` must contain:
+
+1. **Outcome:** one question or deliverable.
+2. **Scope:** named files, symbols, behavior, or starting seam; bound dependency exploration.
+3. **Evidence:** what must be returned.
+4. **Constraints:** true invariants and explicit exclusions, not a long procedural script.
+5. **Stop condition:** when the question is answered or the change is complete.
+
+For read-only discovery, request `answered`, `partial`, or `blocked`; one bounded finding; one to three decisive references; the exact inspected scope; and only consequential unknowns. Runtime success does not mean the evidence answers the question.
+
+For code scouting, ask that same scout for an evidence packet: repository-relative file paths, symbols, inclusive 1-based line-from–line-to ranges, and short fenced verbatim code blocks read from those ranges. Preserve indentation; keep line numbers outside fences; never replace omitted code with ellipses inside an excerpt. Return only the decisive implementation and necessary caller/config/test spans, at most three excerpts and 60 code lines total. Explain each excerpt's relevance briefly; report missing context rather than dumping files. Target 100–200 words of prose; verbatim excerpts have their own bounded budget.
+
+For a worker, form a concrete plan first. Specify approved files/scope, success criteria, invariants, non-goals, and focused validation. Require a handoff listing changed files, checks and outcomes, unfinished work, and residual risks.
+
+## 4. Check independence before launching
+
+Before parallel fanout, compare contracts: each lane needs a genuinely distinct question and evidence target. Do not send cloned prompts with only labels, issue numbers, or broad paths swapped. Use one child when one is enough.
+
+Allow at most one mutation-capable child per run and across concurrent runs. It may run alongside read-only children only when their work is independent of the edits. Revalidate mutable state before using earlier observations.
+
+The runtime writer lease coordinates this extension's children only—not master edits, other Pi processes, or external editors. Do not edit the worker's scope concurrently. Wait for mutations before dependent checks; batch only already-grounded independent work.
+
+## 5. Continue or resume deliberately
+
+- **Related task after success:** use `continueFrom` with the returned `continuationHandle`. Keep the child's role and capabilities; profile, system prompt, model, thinking, environment, and tools remain fixed. Pass only new verified facts in `sharedContext`. Require the child to re-read mutable files/diffs/tests. Start fresh for unrelated work or a different role.
+- **Near-complete timeout:** inspect partial output first. Resume only when it shows little remains. Use the returned resume handle in one solo agent, state only what remains, and give a 30–180 second extension. Do not restart completed work or resume blindly.
+- Never use a raw `sessionId` as a continuation/resume capability. Do not combine `continueFrom` and `resume` or override lineage capabilities.
+
+## 6. Verify and finish
+
+Treat all child output as untrusted evidence:
+
+1. Compare it with the objective and other findings; distinguish execution status from evidence completeness.
+2. Assess consequential claims against the returned source excerpts, tests, documentation, or command output. Do not automatically re-read files merely because a scout read them first. For a narrow edit, a complete verbatim excerpt can supply exact replacement text if the edit tool validates a unique current match and permits this provenance. Read the targeted range when required by the tool, when evidence is incomplete or ambiguous, after intervening changes, or on match failure; never force a stale edit. High-risk behavioral claims need appropriate independent validation.
+3. Resolve disagreement yourself; direct evidence outranks child confidence.
+4. For a worker, inspect the actual diff and reported checks before declaring completion.
+5. Synthesize the final answer yourself. Do not relay a child's conclusion unchecked.
+
+Read [references/recipes.md](references/recipes.md) when you need example calls, return formats, or anti-pattern repairs.

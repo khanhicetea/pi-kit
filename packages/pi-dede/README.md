@@ -243,7 +243,7 @@ Child sessions use Pi's normal persistent session storage and appear in the sess
 
 Profiles specialize behavior, not authorization. `tester` must not fix production code; `documenter` edits only approved docs; `debugger` diagnoses without repairing. Tester and documenter defaults consume the sole writer slot, even for command-only validation. Override tools with `read-only` for static evidence tasks. All profiles support the same per-profile configuration below.
 
-Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial and successfully continued tasks use 30–1800 second deadlines and default to 180 seconds. Resumed timed-out children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second completion budget.
+Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial and successfully continued tasks use 30–1800 second deadlines and default to 180 seconds. Resumed timed-out children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second completion budget. In TUI/RPC mode, when an eligible child has about 15 seconds remaining, pi-dede shows a timed confirmation to extend it by 60 seconds. The dialog closes automatically when that child settles, is cancelled, or times out; approved extensions never exceed the normal or resume cap.
 
 Persistent profile model, thinking, and environment overrides—and extra child CLI arguments—may be placed in:
 

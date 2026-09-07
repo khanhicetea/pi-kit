@@ -20,6 +20,11 @@ const ABORT_GRACE_MS = 3_000;
 /** After closing stdin, wait this long for the RPC child to exit on EOF. */
 const DISPOSE_CLOSE_MS = 2_000;
 
+/** Offer an interactive extension shortly before a child reaches its deadline. */
+export const TIMEOUT_EXTENSION_PROMPT_LEAD_MS = 15_000;
+/** Each approved extension adds this many seconds, without exceeding its policy cap. */
+export const TIMEOUT_EXTENSION_INCREMENT_SECONDS = 60;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -177,11 +182,27 @@ export interface RunChildOptions {
   parentSessionId: string;
   additionalArgs?: readonly string[];
   timeoutSeconds: number;
+  /** Policy cap for interactive extensions. Defaults to the original deadline. */
+  maximumTimeoutSeconds?: number;
+  /** Seconds added for each approved extension. Defaults to 60 seconds. */
+  timeoutExtensionSeconds?: number;
+  /** Called near the deadline without blocking child execution. Its signal closes the dialog when the child ends. */
+  onTimeoutExtensionRequest?: (request: TimeoutExtensionRequest) => Promise<boolean>;
+  /** Reports the effective deadline after the user approves an extension. */
+  onTimeoutExtended?: (timeoutSeconds: number) => void;
   signal?: AbortSignal;
   manager: ChildProcessManager;
   artifacts: ArtifactManager;
   onProgress?: (text: string, protocol: CollectedProtocol) => void;
   onLaunch?: () => void;
+}
+
+export interface TimeoutExtensionRequest {
+  currentTimeoutSeconds: number;
+  extensionSeconds: number;
+  remainingMs: number;
+  /** Aborted when this child settles, is cancelled, or reaches its hard deadline. */
+  signal: AbortSignal;
 }
 
 type FinishReason = "settled" | "closed" | "timeout" | "cancelled";
@@ -215,6 +236,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   let timedOut = false;
   let cancelled = false;
   let warned = false;
+  let softWarningSent = false;
   let outcome: RpcChildOutcome | undefined;
   const collectStderr = (chunk: Buffer) => {
     stderr = tailUtf8(stderr, chunk.toString("utf8"), STDERR_CAP);
@@ -233,8 +255,14 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   });
   options.manager.track(child.process);
 
-  const deadline = startedAt + options.timeoutSeconds * 1000;
-  const warnAt = Math.max(startedAt + MIN_RUN_BEFORE_WARN_MS, deadline - Math.min(SOFT_TERMINATE_GRACE_MS, options.timeoutSeconds * 1000 * 0.2));
+  let effectiveTimeoutSeconds = options.timeoutSeconds;
+  const maximumTimeoutSeconds = Math.max(options.timeoutSeconds, options.maximumTimeoutSeconds ?? options.timeoutSeconds);
+  const timeoutExtensionSeconds = Math.max(0, options.timeoutExtensionSeconds ?? TIMEOUT_EXTENSION_INCREMENT_SECONDS);
+  let deadline = startedAt + effectiveTimeoutSeconds * 1000;
+  let warnTimer: ReturnType<typeof setTimeout> | undefined;
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutExtensionPromptTimer: ReturnType<typeof setTimeout> | undefined;
+  let timeoutExtensionPromptController: AbortController | undefined;
 
   let finishedFlag = false;
   let finish!: (reason: FinishReason) => void;
@@ -252,19 +280,26 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     finish(value.settled ? "settled" : "closed");
   });
 
-  // Soft-terminate: steer the child to wrap up before the hard deadline.
-  const warnTimer = setTimeout(() => {
-    if (finishedFlag || warned) return;
-    warned = true;
-    child.steer(buildSoftTerminateWarning(Math.max(0, Math.round((deadline - Date.now()) / 1000))));
-    try { options.onProgress?.("soft deadline warning sent", child.protocol); }
-    catch (error) { stderr = tailUtf8(stderr, `\nProgress observer failed: ${String(error)}`, STDERR_CAP); }
-  }, Math.max(0, warnAt - Date.now()));
-  warnTimer.unref?.();
+  const scheduleSoftWarning = () => {
+    if (warnTimer) clearTimeout(warnTimer);
+    const warnAt = Math.max(
+      startedAt + MIN_RUN_BEFORE_WARN_MS,
+      deadline - Math.min(SOFT_TERMINATE_GRACE_MS, effectiveTimeoutSeconds * 1000 * 0.2),
+    );
+    warnTimer = setTimeout(() => {
+      if (finishedFlag || warned) return;
+      warned = true;
+      softWarningSent = true;
+      child.steer(buildSoftTerminateWarning(Math.max(0, Math.round((deadline - Date.now()) / 1000))));
+      try { options.onProgress?.("soft deadline warning sent", child.protocol); }
+      catch (error) { stderr = tailUtf8(stderr, `\nProgress observer failed: ${String(error)}`, STDERR_CAP); }
+    }, Math.max(0, warnAt - Date.now()));
+    warnTimer.unref?.();
+  };
 
-  // Hard deadline: graceful RPC abort, then process-tree termination.
-  const deadlineTimer = setTimeout(async () => {
+  const enforceDeadline = async () => {
     if (finishedFlag) return;
+    timeoutExtensionPromptController?.abort();
     timedOut = true;
     try { child.abort(); } catch { /* child gone */ }
     const settledCleanly = await Promise.race([
@@ -278,13 +313,64 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
       await options.manager.terminate(child.process);
     }
     finish("timeout");
-  }, Math.max(0, deadline - Date.now()));
-  deadlineTimer.unref?.();
+  };
+
+  const scheduleDeadline = () => {
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    deadlineTimer = setTimeout(() => { void enforceDeadline(); }, Math.max(0, deadline - Date.now()));
+    deadlineTimer.unref?.();
+  };
+
+  const requestTimeoutExtension = async () => {
+    const extensionSeconds = Math.min(timeoutExtensionSeconds, maximumTimeoutSeconds - effectiveTimeoutSeconds);
+    if (finishedFlag || extensionSeconds <= 0 || !options.onTimeoutExtensionRequest) return;
+    const controller = new AbortController();
+    timeoutExtensionPromptController = controller;
+    let approved = false;
+    try {
+      approved = await options.onTimeoutExtensionRequest({
+        currentTimeoutSeconds: effectiveTimeoutSeconds,
+        extensionSeconds,
+        remainingMs: Math.max(0, deadline - Date.now()),
+        signal: controller.signal,
+      });
+    } catch (error) {
+      stderr = tailUtf8(stderr, `\nTimeout extension prompt failed: ${String(error)}`, STDERR_CAP);
+    } finally {
+      if (timeoutExtensionPromptController === controller) timeoutExtensionPromptController = undefined;
+    }
+    if (!approved || controller.signal.aborted || finishedFlag || Date.now() >= deadline) return;
+
+    const supersededWarning = warned;
+    effectiveTimeoutSeconds += extensionSeconds;
+    deadline += extensionSeconds * 1000;
+    warned = false;
+    try { options.onTimeoutExtended?.(effectiveTimeoutSeconds); }
+    catch (error) { stderr = tailUtf8(stderr, `\nTimeout extension observer failed: ${String(error)}`, STDERR_CAP); }
+    if (supersededWarning) {
+      child.steer(`The user approved an additional ${extensionSeconds}s for this delegation. The earlier deadline warning is superseded; continue the bounded task and finalize before the new deadline.`);
+    }
+    scheduleSoftWarning();
+    scheduleDeadline();
+    scheduleTimeoutExtensionPrompt();
+  };
+
+  const scheduleTimeoutExtensionPrompt = () => {
+    if (timeoutExtensionPromptTimer) clearTimeout(timeoutExtensionPromptTimer);
+    if (!options.onTimeoutExtensionRequest || effectiveTimeoutSeconds >= maximumTimeoutSeconds || timeoutExtensionSeconds <= 0) return;
+    timeoutExtensionPromptTimer = setTimeout(() => { void requestTimeoutExtension(); }, Math.max(0, deadline - TIMEOUT_EXTENSION_PROMPT_LEAD_MS - Date.now()));
+    timeoutExtensionPromptTimer.unref?.();
+  };
+
+  scheduleSoftWarning();
+  scheduleDeadline();
+  scheduleTimeoutExtensionPrompt();
 
   // Master abort (Esc, session shutdown, replacement, reload).
   const onAbort = () => {
     if (finishedFlag) return;
     cancelled = true;
+    timeoutExtensionPromptController?.abort();
     try { child.abort(); } catch { /* child gone */ }
     finish("cancelled");
   };
@@ -302,8 +388,10 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     reason = await finished;
   } finally {
     disposalStartedAt = Date.now();
-    clearTimeout(warnTimer);
-    clearTimeout(deadlineTimer);
+    if (warnTimer) clearTimeout(warnTimer);
+    if (deadlineTimer) clearTimeout(deadlineTimer);
+    if (timeoutExtensionPromptTimer) clearTimeout(timeoutExtensionPromptTimer);
+    timeoutExtensionPromptController?.abort();
     options.signal?.removeEventListener("abort", onAbort);
     // Reap and drain with a finite budget; a closed leader is not a closed group.
     child.close();
@@ -358,7 +446,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
   }
   if (artifactError) stderr = tailUtf8(stderr, `\n${artifactError}`, STDERR_CAP);
   firstEventAt = child.firstEventAt;
-  const activity = warned && status === "timed_out" && !cancelled
+  const activity = softWarningSent && status === "timed_out" && !cancelled
     ? [...protocol.activity, { type: "status" as const, text: "soft deadline warning was sent before timeout" }].slice(-100)
     : protocol.activity;
 
@@ -377,7 +465,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     model: protocol.model ?? options.agent.model,
     thinking: options.agent.thinking,
     tools: [...options.agent.tools],
-    timeoutSeconds: options.timeoutSeconds,
+    timeoutSeconds: effectiveTimeoutSeconds,
     sessionId: options.childSessionId,
     sessionPath: options.sessionPath,
     ...(options.agent.continueFrom ? {
@@ -390,7 +478,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     finalText: capped.text,
     durationMs: Date.now() - startedAt,
     diagnostics: { disposalMs, executionMs: disposalStartedAt - startedAt,
-      malformedLines: protocol.malformedLines, oversizedLines: protocol.oversizedLines, softWarningSent: warned, cleanupConfirmed },
+      malformedLines: protocol.malformedLines, oversizedLines: protocol.oversizedLines, softWarningSent, cleanupConfirmed },
     ...(firstEventAt !== undefined ? { timeToFirstEventMs: firstEventAt - startedAt } : {}),
     ...(exitCode !== undefined ? { exitCode } : {}),
     ...(protocol.stopReason ? { stopReason: protocol.stopReason } : {}),

@@ -8,9 +8,32 @@ A known read, grep, or single authorized command belongs in the master's direct 
 
 For bounded multi-step interpretation, explicitly isolate a configured cheaper profile. Omit `model` to use that profile default. A 60-second execution ceiling is illustrative, not a total-return or cache-retention guarantee.
 
+### Early scout from AGENTS.md
+
+Once the master reads AGENTS.md and can bound the search, it need not inspect the implementation first. Use the same cheap scout to locate, read, and extract evidence; no separate extraction child.
+
+```json
+{
+  "objective": "Identify the current implementation evidence needed for <requested change>",
+  "sharedContext": "AGENTS.md maps <feature> to <directory>. Relevant trusted rules: <rules>. This is a search hint, not verified implementation behavior.",
+  "agents": [{
+    "id": "early-scout",
+    "profile": "scout",
+    "contextMode": "isolated",
+    "thinking": "low",
+    "timeoutSeconds": 60,
+    "goal": "Find <one behavior> within <mapped directory>, following at most one direct dependency outside it. Read the decisive implementation and necessary test/caller spans. Return answered/partial/blocked, inspected scope, and at most three verbatim fenced excerpts totaling at most 60 code lines, each with repository-relative path, symbol, inclusive 1-based line range, and relevance. Keep prose to 100–200 words. No edits or broad exploration. Stop once the behavior is evidenced; report gaps if the boundary prevents an answer."
+  }]
+}
+```
+
+Omitting `model` here uses the configured scout model, falling back to the master model if none is configured; isolation alone does not make it cheaper. Use a deliberate available cheap/fast model override when appropriate.
+
+The master can use sufficient excerpts directly for reasoning and tool-validated exact-match edits. Re-read only when tool provenance rules require it or evidence is incomplete, ambiguous, stale, or fails matching. Do not treat a scout's interpretation as verified merely because code is attached.
+
 ### Canonical discovery contract
 
-Before delegating, write a small intent card for the master: the user outcome, required facts, exclusions, evidence standard, and stop condition. Assign only facts that remain unresolved after local inspection.
+Before delegating, write a small intent card for the master: the user outcome, required facts, exclusions, evidence standard, and stop condition. Assign only unresolved facts; inspection of AGENTS.md can be enough to bound an early scout without first reading implementation files.
 
 Put one child question, its verified starting seam, allowed dependency radius, required evidence, hard limits, and stop condition in `goal`. Put concise known facts and trusted project rules in `sharedContext`. For read-only discovery, request this compact return shape:
 
@@ -25,7 +48,7 @@ One to three decisive path/symbol/range references and the inspected scope.
 Only consequential missing evidence or unfinished work.
 ```
 
-This status describes whether the evidence answers the question; it is separate from runtime states such as `succeeded`, `failed`, or `timed_out`. References remain child-authored and untrusted until the master checks consequential spans.
+This status describes whether the evidence answers the question; it is separate from runtime states such as `succeeded`, `failed`, or `timed_out`. References remain child-authored and untrusted; assess attached verbatim spans directly, with targeted reads or checks when needed rather than automatically repeating discovery.
 
 ### Failure classification (read-only)
 
