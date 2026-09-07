@@ -57,7 +57,7 @@ export function renderDedeCall(args: DedeDelegateParams, theme: any, context: an
   for (const agent of agents) {
     const reusing = agent.resume || agent.continueFrom;
     const profile = reusing ? "existing profile" : agent.profile ?? "custom";
-    const preset = reusing ? "existing capabilities" : agent.toolPreset ?? (profile === "worker" ? "coding" : "read-only");
+    const preset = reusing ? "existing capabilities" : agent.toolPreset ?? (["worker", "tester", "documenter"].includes(profile) ? "coding" : "read-only");
     const timeout = agent.timeoutSeconds ?? args.timeoutSeconds ?? (agent.resume ? DEFAULT_RESUME_TIMEOUT_SECONDS : DEFAULT_CHILD_TIMEOUT_SECONDS);
     const lineage = agent.resume
       ? ` · resume ${preview(agent.resume, 18)}`

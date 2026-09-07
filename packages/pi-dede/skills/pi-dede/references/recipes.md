@@ -8,6 +8,25 @@ A known read, grep, or single authorized command belongs in the master's direct 
 
 For bounded multi-step interpretation, explicitly isolate a configured cheaper profile. Omit `model` to use that profile default. A 60-second execution ceiling is illustrative, not a total-return or cache-retention guarantee.
 
+### Canonical discovery contract
+
+Before delegating, write a small intent card for the master: the user outcome, required facts, exclusions, evidence standard, and stop condition. Assign only facts that remain unresolved after local inspection.
+
+Put one child question, its verified starting seam, allowed dependency radius, required evidence, hard limits, and stop condition in `goal`. Put concise known facts and trusted project rules in `sharedContext`. For read-only discovery, request this compact return shape:
+
+```text
+## Status
+answered | partial | blocked
+## Answer
+One bounded finding.
+## Evidence
+One to three decisive path/symbol/range references and the inspected scope.
+## Uncertainty
+Only consequential missing evidence or unfinished work.
+```
+
+This status describes whether the evidence answers the question; it is separate from runtime states such as `succeeded`, `failed`, or `timed_out`. References remain child-authored and untrusted until the master checks consequential spans.
+
 ### Failure classification (read-only)
 
 ```json

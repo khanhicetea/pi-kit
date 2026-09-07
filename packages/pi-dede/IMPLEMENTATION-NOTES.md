@@ -1,6 +1,8 @@
 # Audit implementation handoff
 
-Static implementation only: no tests, builds, installs, paid calls or benchmarks were run.
+> Historical handoff for hardening changes incorporated before version 0.5.1. Refer to `SPEC.md`, current source, and tests for the active contract.
+
+At the time of this handoff, no tests, builds, installs, paid calls or benchmarks had been run.
 
 ## Changed contracts and limitations
 

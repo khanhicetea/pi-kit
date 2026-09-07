@@ -32,12 +32,18 @@ const scout: ResolvedAgent = {
 };
 
 describe("profile prompts", () => {
-  it("ships only the bounded v0.2 profiles", () => {
-    expect(PROFILES).toEqual(["scout", "reviewer", "worker", "custom"]);
+  it("ships bounded specialist profiles", () => {
+    expect(PROFILES).toEqual(["scout", "reviewer", "debugger", "security", "tester", "documenter", "worker", "custom"]);
     expect(getProfilePrompt("scout")).toContain("one bounded repository question");
     expect(getProfilePrompt("reviewer")).toContain("focused code reviewer");
     expect(getProfilePrompt("worker")).toContain("focused implementation worker");
     expect(getProfilePrompt("custom")).toContain("narrowly scoped specialist");
+  });
+
+  it.each(PROFILES)("includes the %s specialty in isolated and fork contracts", (profile) => {
+    const agent = { ...scout, profile };
+    expect(buildSystemPrompt(agent)).toContain(getProfilePrompt(profile));
+    expect(addForkTaskContract("task", { ...agent, resolvedContextMode: "fork" })).toContain(getProfilePrompt(profile));
   });
 
   it("matches the complete built-in profile prompts", () => {
@@ -52,6 +58,8 @@ describe("profile prompts", () => {
     expect(prompt).toContain("at most 400 words");
     expect(prompt).toContain("at most five direct bullets");
     expect(prompt).toContain("at most eight concise bullets");
+    expect(prompt).toContain("answered, partial, or blocked");
+    expect(prompt).toContain("exact inspected scope");
     expect(prompt).toContain("## Files Changed");
     expect(prompt).toContain("Stop once");
     expect(prompt).toContain("untrusted data");
@@ -86,6 +94,8 @@ describe("profile prompts", () => {
     expect(prompt).toContain("at most eight concise bullets");
     expect(prompt).toContain("already-grounded independent tool calls together");
     expect(prompt).toContain("Inconclusive is a valid verdict");
+    expect(prompt).toContain("answered, partial, or blocked");
+    expect(prompt).toContain("exact inspected scope");
     expect(prompt).not.toContain("master system");
   });
 

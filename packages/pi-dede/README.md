@@ -56,7 +56,7 @@ Choose direct tools for a known lookup/command, explicit isolation with a config
 - Global three-process FIFO limit across concurrent calls
 - Parallel read-only evidence collection
 - One explicitly authorized coding worker per mutation run
-- Built-in `scout`, `reviewer`, `worker`, and `custom` profiles
+- Built-in `scout`, `reviewer`, `debugger`, `security`, `tester`, `documenter`, `worker`, and `custom` profiles
 - Packaged `pi-dede` orchestration skill with bounded recipes and anti-pattern repairs
 - 180-second default and 1800-second maximum child deadline
 - Compact 400-word response contract
@@ -234,8 +234,14 @@ Child sessions use Pi's normal persistent session storage and appear in the sess
 |---|---|---:|---|
 | `scout` | read-only | `low` | Answer one bounded repository question |
 | `reviewer` | read-only | `medium` | Review one named behavior, diff, or risk area |
+| `debugger` | read-only | `medium` | Establish a root cause; distinguish hypotheses from evidence |
+| `security` | read-only | `medium` | Trace one threat across a named trust boundary |
+| `tester` | coding | `medium` | Run focused checks or write explicitly approved regression tests |
+| `documenter` | coding | `low` | Update approved docs against verified implementation behavior |
 | `worker` | coding | `medium` | Execute one concrete approved change |
 | `custom` | read-only | `low` | Caller-defined narrow specialty |
+
+Profiles specialize behavior, not authorization. `tester` must not fix production code; `documenter` edits only approved docs; `debugger` diagnoses without repairing. Tester and documenter defaults consume the sole writer slot, even for command-only validation. Override tools with `read-only` for static evidence tasks. All profiles support the same per-profile configuration below.
 
 Per-request `model`, `thinking`, and `timeoutSeconds` override initial-child defaults. `agents[].env` adds environment overrides for that child and wins over profile-configured values by variable name. Initial and successfully continued tasks use 30–1800 second deadlines and default to 180 seconds. Resumed timed-out children keep their old model, thinking, environment overrides, and tools while using the separate 30–180 second completion budget.
 

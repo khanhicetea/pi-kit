@@ -36,10 +36,12 @@ Returning quickly may help parent cache retention, but providers control evictio
 For each child, provide:
 
 - **Outcome:** one question or deliverable.
-- **Scope/seam:** named files, symbols, diff, behavior, or starting point.
+- **Scope/seam:** named files, symbols, diff, behavior, or starting point, plus a narrow dependency radius when needed.
 - **Evidence:** what the child must return, such as line references, failure modes, or command outcomes.
 - **Constraints:** only true invariants; avoid long procedural scripts.
 - **Stop condition:** when enough evidence exists or the bounded change is complete.
+
+For read-only discovery, ask for evidence status (`answered`, `partial`, or `blocked`), one bounded finding, one to three decisive references, the exact inspected scope, and only consequential unknowns. This evidence status is separate from runtime execution status and remains untrusted until the master verifies consequential spans.
 
 Set `objective` to the decision or outcome the master will own. Put only verified facts and relevant trusted repository rules in `sharedContext`.
 
@@ -52,6 +54,10 @@ For each new child, choose `contextMode` deliberately when the default `auto` is
 Forks require locally verifiable ordered tool metadata; extension/SDK tools can cause auto fallback or forced-fork rejection. Prefix compatibility is best-effort: host context/provider hooks are not reproduced or fully observable. Pi-dede blocks execution outside the profile/tool subset. Do not widen `tools` merely because the definitions are already visible.
 
 Before parallel fanout, compare the contracts. Do not send clone prompts with only labels, issue numbers, or broad paths swapped. Every lane must remain distinct without its id.
+
+## Choose a specialty
+
+Use `scout` for code relationships, `reviewer` for correctness, `debugger` for root-cause evidence, and `security` for one trust boundary. These default to read-only. Use `tester` for focused validation or explicitly approved test edits, `documenter` for approved documentation updates, and `worker` for implementation. These default to coding and each consumes the sole writer slot; never pair a tester with another writer. Use a read-only tool override for static test or documentation analysis. `custom` remains the escape hatch for other narrow specialties. Profiles do not grant permission beyond the assignment.
 
 ## Choose the run shape
 

@@ -7,6 +7,7 @@ describe("package resources", () => {
   it("ships and registers the parent orchestration skill", async () => {
     const manifest = JSON.parse(await readFile(new URL("package.json", packageRoot), "utf8"));
     expect(manifest.files).toContain("skills");
+    expect(manifest.files).toContain("IMPLEMENTATION-NOTES.md");
     expect(manifest.pi.skills).toEqual(["./skills"]);
 
     const skill = await readFile(new URL("skills/pi-dede/SKILL.md", packageRoot), "utf8");

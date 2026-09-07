@@ -1,5 +1,7 @@
 # pi-dede audit and implementation handoff
 
+> Historical audit input for the hardening work incorporated before version 0.5.1. Refer to `SPEC.md`, current source, and tests for the active contract; priority labels below describe the audit state when written.
+
 ## Scope and constraints
 
 Static audit of `@khanhicetea/pi-dede` version `0.4.0`: source modules, README/SPEC, orchestration guidance, and selected existing unit/integration tests. No scripts, builds, tests, installs, or child processes were run. Findings below are source-derived, not runtime reproductions. Paths are relative to `packages/pi-dede/`; symbol names provide stable navigation anchors.

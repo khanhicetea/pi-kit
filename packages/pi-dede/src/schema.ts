@@ -35,7 +35,7 @@ const AgentSchema = Type.Object(
   {
     id: Type.String({ minLength: 1, maxLength: 32, pattern: "^[a-z][a-z0-9-]{0,31}$" }),
     profile: Type.Optional(StringEnum(PROFILES, {
-      description: "Built-in role only: scout, reviewer, worker, or custom. For another narrow specialty, use custom plus systemPrompt.",
+      description: "Built-in specialty: scout (code mapping), reviewer (correctness), debugger (root cause), security (trust boundaries), tester (tests), documenter (docs), worker (implementation), or custom.",
     })),
     goal: Type.String({
       minLength: 1,
@@ -58,7 +58,7 @@ const AgentSchema = Type.Object(
       description: "Additional role constraints for a narrow custom specialty; project rules belong in sharedContext.",
     })),
     toolPreset: Type.Optional(StringEnum(TOOL_PRESETS, {
-      description: "Named tool set: read-only (default for scout/reviewer/custom), coding (default for worker), or none. Omit and set tools for an exact custom set.",
+      description: "Named tool set: read-only (default for evidence profiles), coding (default for worker/tester/documenter), or none. Omit and set tools for an exact custom set.",
     })),
     tools: Type.Optional(Type.Array(StringEnum(BUILTIN_TOOLS), {
       maxItems: 7,
@@ -116,6 +116,10 @@ const PRESET_TOOLS: Record<Exclude<ToolPreset, "custom">, BuiltinTool[]> = {
 const PROFILE_DEFAULT_PRESET: Record<DedeProfile, Exclude<ToolPreset, "custom">> = {
   scout: "read-only",
   reviewer: "read-only",
+  debugger: "read-only",
+  security: "read-only",
+  tester: "coding",
+  documenter: "coding",
   worker: "coding",
   custom: "read-only",
 };
@@ -123,6 +127,10 @@ const PROFILE_DEFAULT_PRESET: Record<DedeProfile, Exclude<ToolPreset, "custom">>
 const PROFILE_DEFAULT_THINKING: Record<DedeProfile, ThinkingLevel> = {
   scout: "low",
   reviewer: "medium",
+  debugger: "medium",
+  security: "medium",
+  tester: "medium",
+  documenter: "low",
   worker: "medium",
   custom: "low",
 };

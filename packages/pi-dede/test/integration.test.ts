@@ -633,7 +633,9 @@ describe("fake Pi integration", () => {
 
     try {
       const { result } = await runChild({
-        agent: { ...agent, timeoutSeconds: 30 },
+        // runChild accepts an already-resolved agent; use a short transport budget here
+        // so the integration test exercises real steering without waiting for schema minima.
+        agent: { ...agent, timeoutSeconds: 6 },
         cwd: directory,
         systemPromptPath: system,
         taskPath: task,
@@ -642,7 +644,7 @@ describe("fake Pi integration", () => {
         childSessionId: "33333333-3333-4333-8333-333333333333",
         runId: "steer-run",
         parentSessionId: "parent",
-        timeoutSeconds: 30,
+        timeoutSeconds: 6,
         manager,
         artifacts,
       });
@@ -660,7 +662,7 @@ describe("fake Pi integration", () => {
       await manager.killAll();
       await rm(directory, { recursive: true, force: true });
     }
-  }, 20000);
+  }, 10000);
 
   it("auto-cancels an extension UI dialog so a child can never block on a human", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-ui-"));

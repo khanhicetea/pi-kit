@@ -1,7 +1,7 @@
 import type { Usage } from "@earendil-works/pi-ai";
 
 export const BUILTIN_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"] as const;
-export const PROFILES = ["scout", "reviewer", "worker", "custom"] as const;
+export const PROFILES = ["scout", "reviewer", "debugger", "security", "tester", "documenter", "worker", "custom"] as const;
 export const TOOL_PRESETS = ["read-only", "coding", "none", "custom"] as const;
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export const CONTEXT_MODES = ["auto", "fork", "isolated"] as const;

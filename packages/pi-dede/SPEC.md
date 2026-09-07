@@ -1,6 +1,6 @@
 # pi-dede Specification
 
-**Status:** Static implementation; runtime validation pending. [IMPLEMENTATION-NOTES.md](./IMPLEMENTATION-NOTES.md) specifies audit-hardening changes and limitations and takes precedence over older details below.
+**Status:** Implemented contract for version 0.5.1. Unit and fake-protocol integration tests cover the local runtime; a real-Pi supported-version matrix remains pending. [IMPLEMENTATION-NOTES.md](./IMPLEMENTATION-NOTES.md) records hardening decisions and unresolved platform limitations.
 
 **Package:** `@khanhicetea/pi-dede`
 
@@ -43,7 +43,7 @@ label: Đệ Đệ
 Conceptual input:
 
 ```ts
-type Profile = "scout" | "reviewer" | "worker" | "custom";
+type Profile = "scout" | "reviewer" | "debugger" | "security" | "tester" | "documenter" | "worker" | "custom";
 type ToolPreset = "read-only" | "coding" | "none" | "custom";
 type Thinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 type ContextMode = "auto" | "fork" | "isolated";

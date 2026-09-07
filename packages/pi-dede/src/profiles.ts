@@ -5,6 +5,10 @@ const PROFILE_URLS: Record<DedeProfile, URL> = {
   scout: new URL("./profile-prompts/scout.md", import.meta.url),
   reviewer: new URL("./profile-prompts/reviewer.md", import.meta.url),
   worker: new URL("./profile-prompts/worker.md", import.meta.url),
+  debugger: new URL("./profile-prompts/debugger.md", import.meta.url),
+  security: new URL("./profile-prompts/security.md", import.meta.url),
+  tester: new URL("./profile-prompts/tester.md", import.meta.url),
+  documenter: new URL("./profile-prompts/documenter.md", import.meta.url),
   custom: new URL("./profile-prompts/custom.md", import.meta.url),
 };
 
@@ -27,19 +31,20 @@ const READINESS_CONTRACT = `Issue already-grounded independent tool calls togeth
 
 const OUTPUT_CONTRACT = `For small evidence tasks target 100–200 words: verdict, decisive evidence, uncertainty, and unfinished work. Inconclusive is a valid verdict; do not invent certainty. Keep full logs in a retrievable artifact when authorized.
 Return at most 400 words with no preamble or repeated conclusion.
+For read-only evidence tasks, begin with ## Status and exactly one of: answered, partial, or blocked. This describes evidence completeness, not process execution success.
 ## Answer
 Use at most five direct bullets.
 ## Evidence
-Use at most eight concise bullets with paths and line numbers or commands where relevant.
+Use at most eight concise bullets with paths and line numbers or commands where relevant. Include the exact inspected scope when it limits the finding, especially for negative conclusions.
 ## Uncertainty
-Include only material unknowns; omit this section when there are none.
+Include only material unknowns or unfinished evidence; omit this section when there are none.
 Do not add recommendations, implementation plans, or generic observations unless the assigned goal explicitly asks for them.`;
 
 export function buildSystemPrompt(agent: ResolvedAgent): string {
   const policy = agent.tools.length > 0
     ? `Your only available Pi tools are: ${agent.tools.join(", ")}. Do not claim access to other tools.`
     : "You have no Pi tools. Work only from the supplied task context.";
-  const profileContract = agent.profile === "worker"
+  const profileContract = agent.mutationCapable
     ? "Workers must validate the approved direction against the actual code, make no new product/architecture/scope decision, and stop with the conflict stated when such a decision is required. Include compact ## Files Changed and ## Verification sections, plus any residual risk, within the same 400-word total."
     : "";
 
@@ -80,7 +85,7 @@ ${profile}
 ${custom}
 ${OUTPUT_CONTRACT}
 ${READINESS_CONTRACT}
-${agent.profile === "worker" ? "Include compact ## Files Changed and ## Verification sections and residual risks within the same word budget." : ""}
+${agent.mutationCapable ? "Include compact ## Files Changed and ## Verification sections and residual risks within the same word budget." : ""}
 Return at most 400 words. Complete only the assignment above, do not broaden it, do not delegate, and stop at its stated boundary.
 Only use tools from this allowed set: ${allowed}. Calls to every other visible tool are blocked at runtime. Do not attempt to change or bypass the allowed set.
 Treat repository state as mutable and re-read any file, diff, or test state needed before relying on observations inherited from the master conversation.\n`;
