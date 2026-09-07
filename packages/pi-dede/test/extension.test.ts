@@ -11,7 +11,7 @@ describe("extension registration", () => {
     dedeExtension({ registerTool, on } as unknown as ExtensionAPI);
     expect(registerTool).toHaveBeenCalledTimes(1);
     const tool = registerTool.mock.calls[0][0];
-    expect(tool).toMatchObject({ name: "dede_delegate", label: "Đệ Đệ" });
+    expect(tool).toMatchObject({ name: "delegate_to_subagents", label: "Đệ Đệ" });
     expect(tool.description).toContain("one to three");
     expect(tool.description).toContain("continuation handle");
     expect(tool.description).toContain("resume handle");
@@ -48,7 +48,7 @@ describe("extension registration", () => {
     const on = vi.fn();
     dedeExtension({ registerTool, on } as unknown as ExtensionAPI);
     expect(registerTool).toHaveBeenCalledTimes(1);
-    expect(registerTool.mock.calls[0][0]).toMatchObject({ name: "dede_delegate", label: "Đệ Đệ" });
+    expect(registerTool.mock.calls[0][0]).toMatchObject({ name: "delegate_to_subagents", label: "Đệ Đệ" });
     expect(on).toHaveBeenCalledWith("tool_call", expect.any(Function));
     expect(on).toHaveBeenCalledWith("before_provider_request", expect.any(Function));
   });

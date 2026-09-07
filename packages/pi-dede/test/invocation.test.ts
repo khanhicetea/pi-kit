@@ -129,7 +129,7 @@ describe("child invocation", () => {
       ...agent(["read", "grep"]),
       contextMode: "fork",
       resolvedContextMode: "fork",
-      visibleTools: ["read", "grep", "write", "dede_delegate"],
+      visibleTools: ["read", "grep", "write", "delegate_to_subagents"],
       inheritedSystemPrompt: "exact master system",
       cacheAffinityKey: "parent-cache-key",
       forkedFrom: { sessionId: "parent-cache-key", entryId: "abc12345", contextTokens: 9000 },
@@ -138,7 +138,7 @@ describe("child invocation", () => {
     const args = invocation.args.join(" ");
     expect(args).toContain("--system-prompt /tmp/run/scout-system.md");
     expect(args).not.toContain("--append-system-prompt");
-    expect(args).toContain("--tools read,grep,write,dede_delegate");
+    expect(args).toContain("--tools read,grep,write,delegate_to_subagents");
     expect(invocation.env.PI_DEDE_ALLOWED_TOOLS).toBe('["read","grep"]');
     expect(invocation.env.PI_DEDE_CACHE_AFFINITY_KEY).toBe("parent-cache-key");
     expect(invocation.env.PI_DEDE_CONTEXT_MODE).toBe("fork");

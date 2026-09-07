@@ -31,8 +31,8 @@ export function localForkSurface(cwd: string, names: readonly string[], metadata
   const selected: ToolSurface[] = [];
   for (const name of names) {
     const actual = metadata.find((tool) => tool.name === name);
-    const expected = name === "dede_delegate" ? DEDE_TOOL_METADATA : builtins.find((tool) => tool.name === name);
-    const ownDede = name === "dede_delegate" && actual?.sourceInfo?.path === fileURLToPath(new URL("./index.ts", import.meta.url));
+    const expected = name === DEDE_TOOL_METADATA.name ? DEDE_TOOL_METADATA : builtins.find((tool) => tool.name === name);
+    const ownDede = name === DEDE_TOOL_METADATA.name && actual?.sourceInfo?.path === fileURLToPath(new URL("./index.ts", import.meta.url));
     if (!actual || !expected || (actual.sourceInfo?.source !== "builtin" && !ownDede)) {
       return { reason: `tool ${name} is not a locally verifiable built-in (dynamic/extension/SDK tool provenance)` };
     }

@@ -3,6 +3,7 @@ import { localForkSurface, type ToolSurface } from "./fork-surface.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DedeConfig } from "./config.ts";
 import type { ResolvedAgent } from "./types.ts";
+import { DEDE_TOOL_METADATA } from "./tool-definition.ts";
 
 export interface MasterForkSnapshot {
   sessionId: string;
@@ -20,11 +21,11 @@ export interface MasterForkSnapshot {
 function assistantHasToolCall(entry: any, toolCallId: string): boolean {
   if (entry?.type !== "message" || entry.message?.role !== "assistant" || !Array.isArray(entry.message.content)) return false;
   return entry.message.content.some((part: any) =>
-    part?.type === "toolCall" && part.id === toolCallId && part.name === "dede_delegate"
+    part?.type === "toolCall" && part.id === toolCallId && part.name === DEDE_TOOL_METADATA.name
   );
 }
 
-/** Capture the stable prefix immediately before the unresolved dede_delegate call. */
+/** Capture the stable prefix immediately before the unresolved delegation call. */
 export function captureMasterForkSnapshot(
   ctx: ExtensionContext,
   toolCallId: string,

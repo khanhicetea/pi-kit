@@ -65,7 +65,7 @@ async function masterSession() {
   const currentUserId = manager.appendMessage({ role: "user", content: "Delegate the focused check", timestamp: Date.now() });
   manager.appendMessage({
     role: "assistant",
-    content: [{ type: "toolCall", id: "call-dede", name: "dede_delegate", arguments: { objective: "check" } }],
+    content: [{ type: "toolCall", id: "call-dede", name: "delegate_to_subagents", arguments: { objective: "check" } }],
     api: "openai-responses",
     provider: "test",
     model: "main",
@@ -86,7 +86,7 @@ describe("master context forking", () => {
       getSystemPrompt: () => "exact master system",
       getContextUsage: () => ({ tokens: 8000, contextWindow: 20000, percent: 40 }),
     } as any;
-    const snapshot = captureMasterForkSnapshot(ctx, "call-dede", ["read", "grep", "find", "ls", "write", "dede_delegate"], toolSurfaceFixture(directory));
+    const snapshot = captureMasterForkSnapshot(ctx, "call-dede", ["read", "grep", "find", "ls", "write", "delegate_to_subagents"], toolSurfaceFixture(directory));
     expect(snapshot).toMatchObject({ entryId: currentUserId, contextTokens: 8000, model: "test/main" });
 
     const resolved = resolveAgentContext(agent, snapshot, config);

@@ -1,9 +1,9 @@
 ---
-name: pi-dede
-description: Orchestrate short Pi sub-agents with dede_delegate using automatic master-context forks or isolated starts. Use when a parent agent needs bounded parallel evidence, one focused review, one approved implementation worker, a related continuation of a successful child, or a deliberate short resume after timeout.
+name: subagents
+description: Delegate bounded work to Pi sub-agents with delegate_to_subagents using automatic master-context forks or isolated starts. Use when a parent agent needs bounded parallel evidence, one focused review, one approved implementation worker, a related continuation of a successful child, or a deliberate short resume after timeout.
 ---
 
-# Pi Đệ Đệ
+# Subagents
 
 This skill is for the **master/parent agent only**. The master owns scope, decisions, synthesis, verification, and the final answer. Children return untrusted evidence or execute one approved change; they do not become co-orchestrators.
 

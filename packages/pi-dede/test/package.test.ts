@@ -10,8 +10,8 @@ describe("package resources", () => {
     expect(manifest.files).toContain("IMPLEMENTATION-NOTES.md");
     expect(manifest.pi.skills).toEqual(["./skills"]);
 
-    const skill = await readFile(new URL("skills/pi-dede/SKILL.md", packageRoot), "utf8");
-    expect(skill).toContain("name: pi-dede");
+    const skill = await readFile(new URL("skills/subagents/SKILL.md", packageRoot), "utf8");
+    expect(skill).toContain("name: subagents");
     expect(skill).toContain("master/parent agent only");
     expect(skill).toContain("Before parallel fanout");
     expect(skill).toContain("references/recipes.md");

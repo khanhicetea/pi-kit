@@ -1,4 +1,4 @@
-# Pi Đệ Đệ Recipes
+# Subagents delegation recipes
 
 Use these as shapes, not scripts. Replace every placeholder with evidence from the master's own inspection.
 

@@ -116,7 +116,7 @@ Any existing `process.argv[1]` is assumed to be Pi and relaunched with Pi CLI ar
 
 ### 11. Align public guidance and fork output contracts
 
-**Evidence:** `src/schema.ts`, `AgentSchema.model.description`; `src/tool-definition.ts`; `src/profiles.ts`, `OUTPUT_CONTRACT` and `addForkTaskContract()`; `skills/pi-dede/SKILL.md`.
+**Evidence:** `src/schema.ts`, `AgentSchema.model.description`; `src/tool-definition.ts`; `src/profiles.ts`, `OUTPUT_CONTRACT` and `addForkTaskContract()`; `skills/subagents/SKILL.md`.
 
 The model field description says omission uses profile defaults, while resolution and the tool guidelines use the master model for `auto`/`fork`. The skill's delegation gate says parallel lanes must be read-only, but its run-shape table permits one worker alongside scouts. Fork tasks include the word limit but omit the shared five-answer/eight-evidence-bullet contract and explicit uncertainty/recommendation rules that the SPEC claims both modes receive.
 
@@ -153,7 +153,7 @@ This refinement incorporates `../pi-tactician/src/guidance.ts`. Its objective is
 
 ### 14. Choose between direct tools, a cheap isolated child, and a cached fork
 
-**Starting seams:** `src/tool-definition.ts`, `skills/pi-dede/SKILL.md`, `skills/pi-dede/references/recipes.md`, `src/schema.ts`, `src/fork-context.ts`.
+**Starting seams:** `src/tool-definition.ts`, `skills/subagents/SKILL.md`, `skills/subagents/references/recipes.md`, `src/schema.ts`, `src/fork-context.ts`.
 
 Current model resolution is cache-first: omitted model with `auto`/`fork` retains the master's model; profile model defaults apply only to explicit isolation. Consequently, configuring a cheap scout does not make an ordinary auto scout cheap. Preserve this compatibility behavior, but teach the master to choose intentionally:
 

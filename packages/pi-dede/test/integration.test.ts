@@ -88,7 +88,7 @@ describe("fake Pi integration", () => {
     master.appendMessage({ role: "user", content: "Inherited sentinel fact", timestamp: Date.now() });
     master.appendMessage({ role: "assistant", content: [{ type: "text", text: "retained" }], api: "openai-responses", provider: "fake", model: "model", usage, stopReason: "stop", timestamp: Date.now() });
     master.appendMessage({ role: "user", content: "Run the delegation", timestamp: Date.now() });
-    master.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "fork-call", name: "dede_delegate", arguments: {} }], api: "openai-responses", provider: "fake", model: "model", usage, stopReason: "toolUse", timestamp: Date.now() });
+    master.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: "fork-call", name: "delegate_to_subagents", arguments: {} }], api: "openai-responses", provider: "fake", model: "model", usage, stopReason: "toolUse", timestamp: Date.now() });
 
     process.env.PI_DEDE_EXECUTABLE = fake;
     process.env.DEDE_TEST_LOG = logPath;
@@ -96,7 +96,7 @@ describe("fake Pi integration", () => {
     let shutdown: any;
     dedeExtension({
       registerTool(value: any) { tool = value; },
-      getActiveTools() { return ["read", "grep", "find", "ls", "write", "dede_delegate"]; },
+      getActiveTools() { return ["read", "grep", "find", "ls", "write", "delegate_to_subagents"]; },
       getAllTools() { return toolSurfaceFixture(directory); },
       on(event: string, handler: any) { if (event === "session_shutdown") shutdown = handler; },
     } as unknown as ExtensionAPI);
@@ -127,7 +127,7 @@ describe("fake Pi integration", () => {
       expect(logged.session).toContain("Inherited sentinel fact");
       expect(logged.session).not.toContain("fork-call");
       expect(logged.system).toBe("EXACT MASTER SYSTEM");
-      expect(logged.tools).toBe("read,grep,find,ls,write,dede_delegate");
+      expect(logged.tools).toBe("read,grep,find,ls,write,delegate_to_subagents");
       expect(JSON.parse(logged.allowed)).toEqual(["read", "grep", "find", "ls"]);
       expect(logged.affinity).toBe(master.getSessionId());
       expect(logged.task).toContain("Only use tools from this allowed set: read, grep, find, ls");

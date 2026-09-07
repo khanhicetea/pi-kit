@@ -34,7 +34,7 @@ describe("forked child runtime", () => {
     expect(registerTool).toHaveBeenCalledTimes(1);
     expect(handlers.get("tool_call")({ toolName: "read" })).toBeUndefined();
     expect(handlers.get("tool_call")({ toolName: "write" })).toMatchObject({ block: true });
-    expect(handlers.get("tool_call")({ toolName: "dede_delegate" })).toMatchObject({ block: true });
+    expect(handlers.get("tool_call")({ toolName: "delegate_to_subagents" })).toMatchObject({ block: true });
     expect(handlers.get("before_provider_request")({ payload: { prompt_cache_key: "child" } })).toEqual({ prompt_cache_key: "parent-session" });
     await expect(registerTool.mock.calls[0][0].execute()).rejects.toThrow(/Recursive delegation is disabled/);
   });

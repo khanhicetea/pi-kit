@@ -28,7 +28,7 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 5. **Small outputs:** children are instructed to use at most 400 words; model-visible output is capped at 4 KiB per child and 12 KiB aggregate.
 6. **Least privilege with cache fidelity:** isolated children expose only allowed tools. Forked children retain the master's visible tool definitions for prompt-cache compatibility, while an internal `tool_call` hook blocks every call outside the profile's allowed subset. At most one mutation-capable child runs per call, and a runtime-wide mutation lease serializes writers across concurrent calls.
 7. **Bounded lineage reuse:** a successful child may receive a related new bounded task with a normal deadline; a timed-out child may receive only a 30–180 second solo completion attempt.
-8. **No recursive delegation:** an explicit internal child bootstrap registers the same visible `dede_delegate` definition for cache fidelity, but its execution always fails and the tool policy blocks it.
+8. **No recursive delegation:** an explicit internal child bootstrap registers the same visible `delegate_to_subagents` definition for cache fidelity, but its execution always fails and the tool policy blocks it.
 9. **Observable cancellation:** progress is throttled, deadlines are visible, and Esc aborts process trees.
 10. **Bidirectional headless transport:** children run `pi --mode rpc` so the master delivers the task, steers a child near its deadline, and aborts gracefully over stdin/stdout, reserving process-tree termination for the hard deadline. A soft deadline warning always precedes the hard kill.
 11. **Progressive orchestration guidance:** the package exposes a parent-only skill that teaches the delegation gate, compact lane contracts, distinct fan-out, verification, and bounded recipes without widening the runtime workflow surface.
@@ -36,7 +36,7 @@ The extension must discourage delegation for first-pass orientation, one-file/sy
 ## 3. Public tool
 
 ```text
-name: dede_delegate
+name: delegate_to_subagents
 label: Đệ Đệ
 ```
 
@@ -152,7 +152,7 @@ pi --mode rpc --no-approve \
 
 The task assignment is delivered as an RPC `prompt` command over the child's stdin; it never appears in process arguments. The child stays headless and uses no terminal multiplexer. The master reads the LF-delimited JSONL event stream from stdout for state (final text, usage, activity) and writes control commands back over stdin: the initial `prompt`, a `steer` warning near the deadline, and an `abort` at the deadline. Extension UI dialogs emitted by the child are auto-cancelled so an autonomous child can never block waiting for a human.
 
-The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. An isolated session starts with only its header. A forked session copies the active master path through the parent of the assistant entry containing the unresolved `dede_delegate` call, so the child never starts with a dangling tool call. `auto` requires a persistent safe point, the same model, compatible required tools, context at or above `forkMinTokens`, context at or below `forkMaxContextRatio`, and no child arguments known to alter prompt fidelity. A forced `fork` fails if these structural compatibility requirements are unavailable but ignores the economic thresholds.
+The child `cwd` equals the master's `ctx.cwd`. Every initial child receives a unique exact session ID in Pi's normal persistent session directory for that project. An isolated session starts with only its header. A forked session copies the active master path through the parent of the assistant entry containing the unresolved `delegate_to_subagents` call, so the child never starts with a dangling tool call. `auto` requires a persistent safe point, the same model, compatible required tools, context at or above `forkMinTokens`, context at or below `forkMaxContextRatio`, and no child arguments known to alter prompt fidelity. A forced `fork` fails if these structural compatibility requirements are unavailable but ignores the economic thresholds.
 
 The forked child receives the captured system prompt through a `before_agent_start` override, validates ordered tool metadata and model at input, and detects later prompt changes at agent start. Local eligibility rejects unverifiable dynamic/extension/SDK surfaces. Context and provider hooks remain unverified: this is best-effort prefix reuse, not byte-for-byte provider equivalence. Its bounded role, output contract, and allowed tool subset are placed in the new user task. The child bootstrap blocks excluded tools and recursive delegation. For provider payloads exposing `prompt_cache_key`, it replaces the new child session key with the retained parent affinity key; other providers remain untouched. Actual cache reads and the derived cache-read ratio are reported rather than assumed.
 

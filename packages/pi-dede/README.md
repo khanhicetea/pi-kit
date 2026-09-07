@@ -6,7 +6,7 @@ A deliberately narrow Pi extension for short delegation. It helps a master fan o
 
 ## When to use it
 
-Use `dede_delegate` only when the master already knows enough to define exact scope.
+Use `delegate_to_subagents` only when the master already knows enough to define exact scope.
 
 Good uses:
 
@@ -36,7 +36,7 @@ After local inspection, give every child a compact contract:
 
 Before parallel fan-out, compare the goals. Each lane must remain distinct without its id—do not clone one prompt and swap only labels, issue numbers, or broad paths. For a worker, also provide the approved scope, success criteria, focused validation, and required changed-files/checks/risks handoff.
 
-The installed package exposes a `pi-dede` skill with detailed recipes. Pi loads it on demand when a delegation/orchestration task matches, or you can invoke `/skill:pi-dede` explicitly.
+The installed package exposes a `subagents` skill with detailed recipes. Pi loads it on demand when a delegation/orchestration task matches, or you can invoke `/skill:subagents` explicitly.
 
 ## Audit hardening
 
@@ -46,7 +46,7 @@ Choose direct tools for a known lookup/command, explicit isolation with a config
 
 ## Features
 
-- One LLM-callable tool: `dede_delegate`
+- One LLM-callable tool: `delegate_to_subagents`
 - One to three independent persistent children per call
 - `auto`, `fork`, and `isolated` context modes for new children
 - Safe master-session forks that exclude the unresolved delegation tool call
@@ -57,7 +57,7 @@ Choose direct tools for a known lookup/command, explicit isolation with a config
 - Parallel read-only evidence collection
 - One explicitly authorized coding worker per mutation run
 - Built-in `scout`, `reviewer`, `debugger`, `security`, `tester`, `documenter`, `worker`, and `custom` profiles
-- Packaged `pi-dede` orchestration skill with bounded recipes and anti-pattern repairs
+- Packaged `subagents` orchestration skill with bounded recipes and anti-pattern repairs
 - 180-second default and 1800-second maximum child deadline
 - Compact 400-word response contract
 - 4 KiB model-visible limit per child and 12 KiB aggregate limit
@@ -140,7 +140,7 @@ Set `agents[].contextMode` on a new child:
 }
 ```
 
-The fork ends immediately before the assistant message containing the unresolved `dede_delegate` call. Each child receives its own persistent session file and new task prompt. In fork mode the child keeps the master's exact effective system prompt and visible tool definitions; the final task prompt states the bounded role and allowed subset, and an internal `tool_call` hook blocks every tool outside that subset. Recursive delegation remains blocked.
+The fork ends immediately before the assistant message containing the unresolved `delegate_to_subagents` call. Each child receives its own persistent session file and new task prompt. In fork mode the child keeps the master's exact effective system prompt and visible tool definitions; the final task prompt states the bounded role and allowed subset, and an internal `tool_call` hook blocks every tool outside that subset. Recursive delegation remains blocked.
 
 Forking is not always cheaper. `auto` defaults to a 4,000-token minimum and a 70% context-window ceiling, requires the same model, and falls back when child-specific arguments alter the prompt/model/tool surface. Results disclose the resolved mode, inherited token estimate, provider-reported cache reads, cache ratio, time to first child event, and any fallback reason.
 
@@ -163,7 +163,7 @@ After the master has synthesized evidence and approved a concrete plan, run one 
 }
 ```
 
-Any child with `bash`, `edit`, or `write` is mutation-capable. At most one mutation-capable child may run per call; it may run alongside read-only agents. A runtime-wide mutation lease also serializes writers from concurrent `dede_delegate` calls, preventing separate calls from clobbering the same workspace.
+Any child with `bash`, `edit`, or `write` is mutation-capable. At most one mutation-capable child may run per call; it may run alongside read-only agents. A runtime-wide mutation lease also serializes writers from concurrent `delegate_to_subagents` calls, preventing separate calls from clobbering the same workspace.
 
 ## Continue a successfully finished child
 
