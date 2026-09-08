@@ -6,6 +6,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { normalizeToLF } from "./text.ts";
+import { buildSymbolRead, type ReadSymbolInput } from "./read-symbol.ts";
 
 export interface ReadEvidence {
 	/** 0-based, end-exclusive offsets in LF-normalized, BOM-stripped content. */
@@ -18,6 +19,8 @@ export interface ReadEvidence {
 
 interface ReadCall {
 	id: string;
+	name: "read" | "read_symbol";
+	arguments: Record<string, unknown>;
 	path: string;
 	offset?: number;
 	limit?: number;
@@ -69,11 +72,13 @@ export async function findLatestReadEvidence(
 	for (const message of messages) {
 		if (message.role === "assistant") {
 			for (const item of (message as StoredAssistant).content) {
-				if (item.type !== "toolCall" || item.name !== "read" || typeof item.id !== "string") continue;
+				if (item.type !== "toolCall" || (item.name !== "read" && item.name !== "read_symbol") || typeof item.id !== "string") continue;
 				const args = item.arguments as Record<string, unknown> | undefined;
 				if (!args || typeof args.path !== "string") continue;
 				calls.push({
 					id: item.id,
+					name: item.name,
+					arguments: args,
 					path: args.path,
 					offset: typeof args.offset === "number" ? args.offset : undefined,
 					limit: typeof args.limit === "number" ? args.limit : undefined,
@@ -81,7 +86,7 @@ export async function findLatestReadEvidence(
 			}
 		} else if (message.role === "toolResult") {
 			const result = message as StoredToolResult;
-			if (result.toolName === "read") results.set(result.toolCallId, result);
+			if (result.toolName === "read" || result.toolName === "read_symbol") results.set(result.toolCallId, result);
 		}
 	}
 
@@ -100,7 +105,17 @@ export async function findLatestReadEvidence(
 		// Never fall back to older intent when the newest same-file read is
 		// missing, failed, malformed, or stale.
 		const result = results.get(call.id);
-		if (!result || result.isError) return null;
+		if (!result || result.isError || result.toolName !== call.name) return null;
+		if (call.name === "read_symbol") {
+			if (result.content.length !== 1 || result.content[0].type !== "text") return null;
+			try {
+				// Regenerate from current source and original arguments, not untrusted
+				// details. Snapshot, selector, envelope, and visible bytes must agree.
+				const expected = await buildSymbolRead(call.arguments as ReadSymbolInput, normalizedContent);
+				if (result.content[0].text !== expected.content[0].text) return null;
+				return expected.details.visible ?? null;
+			} catch { return null; }
+		}
 		return evidenceFromBuiltinRead(normalizedContent, call, result.content);
 	}
 	return null;
@@ -155,7 +170,9 @@ export function evidenceFromBuiltinRead(
 	const startLine = startIndex + 1;
 	const endLine = startLine + visibleLines - 1;
 	const startOffset = offsetAtLine(content, startLine);
-	const endOffset = offsetAtLine(content, endLine + 1);
+	// A line-limited/truncated result omits the separator after its final
+	// displayed line. Do not authorize an edit anchor through unseen bytes.
+	const endOffset = startOffset + truncation.content.length;
 	return { startOffset, endOffset, startLine, endLine };
 }
 

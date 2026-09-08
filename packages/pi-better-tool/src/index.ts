@@ -1,14 +1,18 @@
 /**
  * pi-better-tool — better built-in tools for the pi coding agent.
  *
- * Currently ships one override:
- * - `edit` — built-in-compatible exact replacement with richer recovery
- *   context and conservative read-based resolution when a recent verified
- *   read contains exactly one of several literal occurrences.
+ * Ships a safe edit override and a separate syntax-aware source reader:
+ * - `edit` — exact replacement with actionable recovery context.
+ * - `read_symbol` — whole symbols by containing line or exact name.
+ * Built-in `read` remains available for text, images, and explicit line ranges.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerBetterEditTool } from "./tool.ts";
+import { registerReadSymbolTool } from "./read-symbol.ts";
+
+export { executeReadSymbol, registerReadSymbolTool, readSymbolSchema } from "./read-symbol.ts";
+export type { ReadSymbolInput, ReadSymbolResult } from "./read-symbol.ts";
 
 export { registerBetterEditTool, executeBetterEdit, prepareEditArguments, betterEditSchema } from "./tool.ts";
 export type {
@@ -29,4 +33,5 @@ export type { AnalyzeOptions, EditFailure, EditOp, EditAnalysis } from "./apply.
 
 export default function (pi: ExtensionAPI) {
 	registerBetterEditTool(pi);
+	registerReadSymbolTool(pi);
 }

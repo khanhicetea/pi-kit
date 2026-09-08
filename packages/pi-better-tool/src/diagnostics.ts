@@ -13,6 +13,7 @@
 
 import type { EditFailure, EditOp, LineRange } from "./apply.ts";
 import { normalizeEdits } from "./apply.ts";
+import { languageForPath } from "./symbols.ts";
 import { findClosestRegion, lineSimilarity, probeMatchCauses } from "./similarity.ts";
 import {
 	countFuzzyOccurrences,
@@ -134,7 +135,20 @@ export function formatAutoDisambiguationSuccess(
 }
 
 export function formatEditFailure(opts: FormatFailureOptions): string {
-	return boundCompleteOutput(formatEditFailureUnbounded(opts));
+	const { failure, edits } = opts;
+	const target = "editIndex" in failure ? `edits[${failure.editIndex}]` : failure.kind === "overlap" ? `edits[${failure.firstEditIndex}] and edits[${failure.secondEditIndex}]` : "the replacement text";
+	const batch = edits.length > 1
+		? `Batch status: 0/${edits.length} replacements written. Fix ${target} and resubmit the complete batch against the original file; no earlier replacement was applied.`
+		: "Write status: no changes were written by this call.";
+	return boundCompleteOutput(`[edit failure: ${failure.kind}]\n${batch}\n\n${formatEditFailureUnbounded(opts)}`);
+}
+
+/** Concrete next arguments prevent another call just to discover boundaries. */
+function nextContextCall(path: string, start: number, end = start): string {
+	const read = `read ${JSON.stringify({ path, offset: Math.max(1, start - 3), limit: Math.min(1800, end - start + 7) })}`;
+	return languageForPath(path)
+		? `Next context call: read_symbol ${JSON.stringify({ path, line: start })} for the enclosing symbol; or ${read} for exact line context.`
+		: `Next context call: ${read}.`;
 }
 
 function formatEditFailureUnbounded(opts: FormatFailureOptions): string {
@@ -143,9 +157,7 @@ function formatEditFailureUnbounded(opts: FormatFailureOptions): string {
 
 	switch (failure.kind) {
 		case "empty-old-text": {
-			return total === 1
-				? `oldText must not be empty in ${path}.`
-				: `edits[${failure.editIndex}].oldText must not be empty in ${path}.`;
+			return `${total === 1 ? "oldText" : `edits[${failure.editIndex}].oldText`} must not be empty in ${path}. Copy non-empty source text as the anchor; for insertion, retain that anchor in newText.\n${nextContextCall(path, 1)}`;
 		}
 
 		case "not-found": {
@@ -175,13 +187,19 @@ function formatEditFailureUnbounded(opts: FormatFailureOptions): string {
 
 		case "overlap": {
 			const { firstEditIndex, secondEditIndex, firstRange, secondRange } = failure;
-			return `edits[${firstEditIndex}] and edits[${secondEditIndex}] overlap in ${path} (edits[${firstEditIndex}] covers lines ${firstRange.start}-${firstRange.end}, edits[${secondEditIndex}] covers lines ${secondRange.start}-${secondRange.end}). Merge them into one edit or target disjoint regions.`;
+			const start = Math.min(firstRange.start, secondRange.start);
+			const end = Math.max(firstRange.end, secondRange.end);
+			const head = `edits[${firstEditIndex}] and edits[${secondEditIndex}] overlap in ${path} (edits[${firstEditIndex}] covers lines ${firstRange.start}-${firstRange.end}, edits[${secondEditIndex}] covers lines ${secondRange.start}-${secondRange.end}). Merge them into one edit or target disjoint regions.`;
+			const expansion = normalizedContent.length <= MAX_CONTENT_FOR_DIAGNOSTICS
+				? findMinimalUniqueExpansion(normalizedContent, normalizeForFuzzyMatch(normalizedContent), getLineSpans(normalizedContent), { start, end }) : null;
+			if (expansion && isSnippetRenderable(expansion.text)) {
+				return `${head}\n\nRetryable merged oldText at lines ${expansion.startLine}-${expansion.endLine}. Apply BOTH intended changes to this snippet in one newText; do not concatenate the previous replacements.\n${renderSnippet(expansion.text).join("\n")}`;
+			}
+			return `${head}\nMerged source snippet omitted or not unique. ${nextContextCall(path, start, end)}`;
 		}
 
 		case "no-change": {
-			return total === 1
-				? `No changes made to ${path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected.`
-				: `No changes made to ${path}. The replacements produced identical content.`;
+			return `No changes made to ${path}. The replacement${total === 1 ? "" : "s"} produced identical content. Do not repeat the same call. If the intended change is already present, stop; otherwise change newText so it differs from the matched source.`;
 		}
 	}
 }
@@ -204,6 +222,7 @@ function formatAmbiguous(opts: FormatFailureOptions, failure: Extract<EditFailur
 	listed.forEach((offset, i) => {
 		const range = rangeFromOffset(fuzzySpans, offset, fuzzyOld.length);
 		lines.push(`  ${i + 1}. ${describeLines(range.start, range.end)}`);
+		lines.push(`     ${nextContextCall(opts.path, range.start, range.end)}`);
 	});
 	if (failure.occurrenceCount > listed.length) {
 		lines.push(`  … and ${failure.occurrenceCount - listed.length} more`);
@@ -345,6 +364,14 @@ function formatNotFound(opts: FormatFailureOptions, oldText: string): string {
 	const causes = probeMatchCauses(normalizedContent, oldText);
 
 	const lines: string[] = [];
+	const edit = "editIndex" in opts.failure ? normalizeEdits(opts.edits)[opts.failure.editIndex] : undefined;
+	if (edit?.newText && edit.newText !== oldText) {
+		const offsets = findAllOccurrences(normalizedContent, edit.newText, 4);
+		if (offsets.length) {
+			const spans = getLineSpans(normalizedContent);
+			lines.push(`Replacement text already appears at ${offsets.map((offset) => { const range = rangeFromOffset(spans, offset, edit.newText.length); return describeLines(range.start, range.end); }).join(", ")} (up to 4 shown). The change may already be applied; verify intent before choosing another target.`, "");
+		}
+	}
 	if (closest) {
 		lines.push(
 			`Closest match in the file: ${describeLines(closest.startLine, closest.endLine)} (~${Math.round(closest.score * 100)}% line similarity${closest.truncated ? `, compared against the first ${closest.totalOldLines} lines of your oldText` : ""}).`,
@@ -422,11 +449,14 @@ function formatNotFound(opts: FormatFailureOptions, oldText: string): string {
 				`Candidate file content at ${describeLines(closest.startLine, closest.endLine)} is not safe for a direct retry (${reasons.join("; ")}). Read and verify this range before editing.`,
 			);
 			if (safelyRenderable) lines.push(...renderSnippet(uniqueCandidate ?? candidate));
+			lines.push(nextContextCall(opts.path, closest.startLine, closest.endLine));
+			if (closest.competitor && competitorGap < MIN_DIRECT_RETRY_GAP) lines.push(nextContextCall(opts.path, closest.competitor.startLine, closest.competitor.endLine));
 		}
 
 	} else {
 		lines.push("No reliable similar region was found within the bounded diagnostic search.");
 		lines.push("If you expected this text to exist, read the file around the expected location and retry.");
+		lines.push(languageForPath(opts.path) ? `Next context call: read_symbol ${JSON.stringify({ path: opts.path })} to locate the intended symbol without guessing line ranges.` : nextContextCall(opts.path, 1));
 	}
 
 	if (causes.length > 0) {
@@ -449,7 +479,7 @@ function truncateLine(line: string): string {
  * Enforce the complete output budget without ever cutting a generated fenced
  * snippet. Oversized snippets are omitted atomically and clearly marked.
  */
-function boundCompleteOutput(message: string): string {
+export function boundCompleteOutput(message: string): string {
 	const source = message.split("\n");
 	const output: string[] = [];
 	let bytes = 0;

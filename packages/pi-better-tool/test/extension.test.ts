@@ -15,7 +15,7 @@ describe("extension registration", () => {
 	it("registers an edit tool override with the built-in-compatible shape", () => {
 		const { api, tools } = mockPi();
 		extension(api);
-		expect(tools).toHaveLength(1);
+		expect(tools.map((tool) => tool.name)).toEqual(["edit", "read_symbol"]);
 		const tool = tools[0];
 		expect(tool.name).toBe("edit");
 		expect(tool.label).toBe("edit");
@@ -36,5 +36,12 @@ describe("extension registration", () => {
 		// no custom renderers: the built-in edit renderer is inherited
 		expect(tool.renderCall).toBeUndefined();
 		expect(tool.renderResult).toBeUndefined();
+		const symbolTool = tools[1];
+		expect(symbolTool.description).toContain("complete function");
+		expect(symbolTool.description).toContain("48 KiB");
+		expect((symbolTool.promptGuidelines as string[]).every((guideline) => guideline.includes("read_symbol"))).toBe(true);
+		expect(symbolTool.parameters).toBeDefined();
+		expect(typeof symbolTool.execute).toBe("function");
+		expect(tools.some((tool) => tool.name === "read")).toBe(false);
 	});
 });

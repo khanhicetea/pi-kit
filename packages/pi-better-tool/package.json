@@ -1,7 +1,7 @@
 {
 	"name": "@khanhicetea/pi-better-tool",
-	"version": "0.2.2",
-	"description": "Better built-in tools for pi: an edit tool override that returns recovery context (closest match + disambiguation snippets) instead of bare failures",
+	"version": "0.2.3",
+	"description": "Context-aware tools for pi: safe edit recovery and syntax-aware read_symbol for whole functions, methods, and classes by line or name",
 	"type": "module",
 	"license": "MIT",
 	"repository": {
@@ -13,8 +13,20 @@
 	"bugs": {
 		"url": "https://github.com/khanhicetea/pi-kit/issues"
 	},
-	"keywords": ["pi-package", "pi-extension", "edit", "tools"],
-	"files": ["src", "README.md", "LICENSE"],
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"edit",
+		"read",
+		"symbols",
+		"tree-sitter",
+		"tools"
+	],
+	"files": [
+		"src",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit",
@@ -33,12 +45,29 @@
 		"vitest": "^3.2.0"
 	},
 	"pi": {
-		"extensions": ["./src/index.ts"]
+		"extensions": [
+			"./src/index.ts"
+		]
 	},
 	"engines": {
 		"node": ">=20"
 	},
 	"publishConfig": {
 		"access": "public"
+	},
+	"dependencies": {
+		"@ast-grep/lang-bash": "0.0.8",
+		"@ast-grep/lang-c": "0.0.6",
+		"@ast-grep/lang-cpp": "0.0.6",
+		"@ast-grep/lang-csharp": "0.0.6",
+		"@ast-grep/lang-go": "0.0.6",
+		"@ast-grep/lang-java": "0.0.7",
+		"@ast-grep/lang-kotlin": "0.0.7",
+		"@ast-grep/lang-php": "0.0.7",
+		"@ast-grep/lang-python": "0.0.6",
+		"@ast-grep/lang-ruby": "0.0.7",
+		"@ast-grep/lang-rust": "0.0.7",
+		"@ast-grep/lang-swift": "0.0.8",
+		"@ast-grep/napi": "0.45.3"
 	}
 }

@@ -84,8 +84,17 @@ describe("read evidence from built-in output", () => {
 			startLine: 2,
 			endLine: 3,
 			startOffset: 4,
-			endOffset: 14,
+			endOffset: 13,
 		});
+	});
+
+	it("does not include an undisplayed trailing newline in bounded evidence", async () => {
+		const content = "a\nTARGET\nUNSEEN\n";
+		await writeFile(join(cwd, "boundary.txt"), content);
+		const result = await builtinRead("boundary.txt", { offset: 2, limit: 1 });
+		const output = result.content[0]?.type === "text" ? result.content[0].text : "";
+		const evidence = await find("boundary.txt", content, pair("boundary.txt", output, { offset: 2, limit: 1 }));
+		expect(content.slice(evidence!.startOffset, evidence!.endOffset)).toBe("TARGET");
 	});
 
 	it("materializes retained-tail messages when present", async () => {

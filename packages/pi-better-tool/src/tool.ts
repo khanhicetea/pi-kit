@@ -31,9 +31,7 @@ import {
 	stat as fsStat,
 	writeFile as fsWriteFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveToolPath as resolveToCwd } from "./paths.ts";
 import { type Static, Type } from "typebox";
 import { analyzeEdits, applyAnalysis, fuzzyFindText, normalizeEdits, type EditOp } from "./apply.ts";
 import {
@@ -71,31 +69,6 @@ export const betterEditSchema = Type.Object({
 });
 
 export type BetterEditInput = Static<typeof betterEditSchema>;
-
-const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
-
-/** Match pi's built-in path normalization for tool arguments. */
-function normalizeToolPath(input: string): string {
-	let path = input.replace(UNICODE_SPACES, " ");
-	if (path.startsWith("@")) path = path.slice(1);
-
-	if (process.platform === "win32" && path.startsWith("/") && !path.startsWith("//") && !path.includes("\\")) {
-		const match = path.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
-		if (match) path = `${match[1].toUpperCase()}:\\${match[2]?.replaceAll("/", "\\") ?? ""}`;
-	}
-
-	if (path === "~") return homedir();
-	if (path.startsWith("~/") || (process.platform === "win32" && path.startsWith("~\\"))) {
-		return join(homedir(), path.slice(2));
-	}
-	if (/^file:\/\//.test(path)) return fileURLToPath(path);
-	return path;
-}
-
-function resolveToCwd(filePath: string, cwd: string): string {
-	const path = normalizeToolPath(filePath);
-	return isAbsolute(path) ? resolve(path) : resolve(cwd, path);
-}
 
 function isSingleEditInput(value: unknown): value is { oldText: string; newText: string } {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -391,7 +364,8 @@ export function registerBetterEditTool(pi: ExtensionAPI, options: BetterEditExec
 			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls.",
 			"In edit, each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits; merge nearby changes into one edit.",
 			"Keep edit edits[].oldText as small as possible while still being unique in the file; do not pad with large unchanged regions.",
-			"When edit safely auto-disambiguates repeated text from the latest verified stored-context read, its success message lists bounded remaining candidates for an optional follow-up edit.",
+			"When edit safely auto-disambiguates repeated text from the latest verified stored-context read or read_symbol result, its success message lists bounded remaining candidates for an optional follow-up edit.",
+			"An edit matching failure applies none of the batch. Fix the reported entries and resubmit the complete batch, not only the failed replacement. Use suggested read_symbol calls when you need the whole enclosing function.",
 			"When edit fails, reuse only a fenced snippet explicitly marked retryable. If edit reports low confidence, competing candidates, omitted output, stale evidence, or a write that may have modified the file, read the referenced file/range before retrying.",
 		],
 		parameters: betterEditSchema,

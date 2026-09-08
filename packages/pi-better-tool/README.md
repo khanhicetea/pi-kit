@@ -1,16 +1,10 @@
 # pi-better-tool
 
-Better built-in tools for the [pi coding agent](https://github.com/earendil-works/pi-mono) — starting with an `edit` override that turns many failed edits into recoverable ones.
+Context-aware tools for the [Pi coding agent](https://github.com/earendil-works/pi-mono):
 
-## Why
-
-Pi's built-in `edit` requires every `edits[].oldText` to identify one non-overlapping region. When matching fails, this override returns bounded context that can make the next action safer:
-
-- **Ambiguous literal match after a bounded read** — selects an occurrence only when exactly one tracked literal occurrence is fully contained in the newest verified stored-context `read` of the same file.
-- **Other ambiguous matches** — reports bounded occurrence ranges and whole-line prefix/suffix expansions that are unique under edit matching.
-- **Text not found** — reports a bounded closest-region comparison. It gives direct-retry wording only when the exact candidate is unique, sufficiently similar, and meaningfully better than a distinct runner-up.
-
-Low-confidence, competing, stale, oversized, or omitted candidates tell the model to read the referenced range instead of retrying blindly.
+- **`edit`** replaces the built-in edit tool. Failures explain what failed, what was not written, and what to do next.
+- **`read_symbol`** is a new tool. Read a whole function, method, class, or type by containing line or exact name. With only a path, get a symbol outline.
+- **`read` stays unchanged** for ordinary text, images, and explicit line ranges.
 
 ## Install
 
@@ -18,126 +12,157 @@ Low-confidence, competing, stale, oversized, or omitted candidates tell the mode
 pi install npm:@khanhicetea/pi-better-tool
 ```
 
-For local development from this monorepo:
+From this monorepo:
 
 ```bash
 pi install /absolute/path/to/pi-kit/packages/pi-better-tool
 ```
 
-It is also registered in the root `package.json` under `pi.extensions`.
+The root `package.json` also registers the extension. After local changes, use `/reload` in Pi to load the new tool definition. After upgrading to a release that adds grammar packages, restart Pi once: ast-grep’s native language registry cannot be extended by `/reload` in an already-running process.
 
-## Example: ambiguous oldText
+## Read the symbol, not guessed line windows
 
-````text
-Found 2 occurrences of the text in dup.go. The text must be unique. Please provide more context to make it unique.
+After grep identifies a location:
 
-Occurrences:
-  1. lines 2-3
-  2. lines 6-7
-
-Disambiguated oldText candidates are shown below when they fit safely. A fenced snippet can be reused exactly; an omitted snippet must be read from its referenced range first:
-
-Occurrence 1 (lines 2-3) — minimum context: 0 lines before, 1 line after:
+```json
+{"path":"src/server.ts","line":142}
 ```
-	log()
+
+Call `read_symbol` with an exact name instead:
+
+```json
+{"path":"src/server.ts","symbol":"Server.handleRequest"}
+```
+
+Get the enclosing class or function:
+
+```json
+{"path":"src/server.ts","line":142,"parent":1}
+```
+
+Discover names and ranges without reading every body:
+
+```json
+{"path":"src/server.ts"}
+```
+
+### Arguments
+
+| Argument | Meaning |
+| --- | --- |
+| `path` | Local relative/absolute path; supports `@path`, `~/path`, and file URLs. |
+| `line` | 1-based file line. Select the innermost declaration containing it. |
+| `column` | Optional 1-based UTF-16 column with `line`, to distinguish same-line symbols. |
+| `symbol` | Exact, case-sensitive name or qualified name such as `Server.run`. Combine with `line` for duplicate names. |
+| `parent` | Move outward through enclosing declarations; default 0, maximum 20. |
+| `context` | Extra whole lines before/after the declaration; default 0, maximum 20. |
+| `offset` | 1-based position **within the selection**, not a file line. For an outline, the entry position. |
+| `limit` | Maximum source lines (default 1000) or outline entries (default 50); maximum 1800. |
+
+Omit both `line` and `symbol` for an outline. Named selection never silently chooses the first duplicate. Line selection never silently chooses between same-line siblings. Candidate lists include concrete calls with names and positions.
+
+### Languages and boundaries
+
+Syntax parsing uses Tree-sitter through `@ast-grep/napi`, not indentation or brace-counting guesses:
+
+- JavaScript, JSX, TypeScript, TSX, and their module extensions
+- Bash-compatible shell scripts (`.sh`, `.bash`, `.zsh`, and related extensions)
+- C and C++ (including common header and CUDA/Arduino extensions)
+- C# and Java
+- Kotlin
+- PHP
+- Python and `.pyi`
+- Ruby (including `Gemfile` and `Rakefile`)
+- Rust
+- Swift
+
+The reader handles named declarations, nested functions, JS/TS arrow functions and methods, Python decorators, Rust attributes, and containing classes/types. It includes export/declaration wrappers when applicable. It returns **whole source lines**, so a line can also contain adjacent code. It does not resolve imports, references, overload implementations, macros, or runtime bindings. Leading standalone comments are not automatically attached to a declaration.
+
+Incomplete syntax, unsupported languages, unavailable parsers, and locations without declarations do not produce guessed symbol boundaries. Failures give a bounded source preview or candidate list and concrete next-call arguments. Missing paths include a bounded list of nearby files when the parent directory is accessible.
+
+### Output and pagination
+
+Results identify the selected symbol, enclosing names, full declaration range, displayed file range, and a SHA-256 source snapshot. Source appears in an unnumbered fenced block, so line-number prefixes cannot accidentally enter `oldText`.
+
+Large selections return a whole-line page, explicitly marked **partial**, with the complete next `read_symbol` arguments. Follow that continuation instead of calculating file offsets. Each call reads a fresh snapshot; do not combine pages whose snapshot hashes differ.
+
+Limits:
+
+- Source analysis: 2 MiB UTF-8, 100,000 syntax nodes, 10,000 declarations, 1,024 characters per qualified symbol name.
+- Complete read output: 48 KiB / 1,950 lines, including metadata and fences.
+- No clipped copyable source lines or broken fences. A line too large to display gets preview/read guidance instead.
+- Invalid UTF-8, NUL-containing input, and non-regular files are rejected.
+
+Parser packages are runtime dependencies. Common platforms use prebuilt native binaries. If a grammar is unavailable on a platform, the tool gives read guidance; it never runs repository code, installs a compiler, or builds a grammar during a tool call. The edit tool can still work without loading symbol parsers.
+
+## Recover from an edit failure in the next call
+
+The `edit` input remains:
+
+```json
+{
+  "path": "src/server.ts",
+  "edits": [
+    { "oldText": "exact current text", "newText": "replacement text" }
+  ]
 }
-
-func second() {
 ```
 
-Tip: only fenced snippets explicitly presented as retryable should be copied into oldText.
+All entries match the **original file**, not the output of earlier entries. Matching/overlap failures apply none of the batch. Fix the reported entries and resubmit the **complete batch**.
 
-No changes were written — the file was not modified.
-````
+| Failure | Returned context |
+| --- | --- |
+| Repeated `oldText` | Occurrence ranges, bounded unique anchor expansions, and concrete context-read calls. |
+| Text not found | Closest-region comparison with original whitespace, likely causes, and exact retry text only when unique and clearly better than competing candidates. |
+| Overlapping entries | Both ranges plus a unique merged source anchor when it fits. Apply both intended changes to one `newText`. |
+| Empty anchor | Explain insertion anchoring and give a context-read call. |
+| No change | Explain that the output is identical; do not repeat the same call. |
+| Replacement already appears | Report its locations as a clue, not proof that the intended change is complete. |
 
-## Example: competing closest matches
+A failed batch starts with, for example:
 
-````text
-Could not find the exact text in handlers.ts. The old text must match exactly including all whitespace and newlines.
-
-Closest match in the file: lines 10-12 (~91% line similarity).
-...
-Candidate file content at lines 10-12 is not safe for a direct retry (a distinct candidate at lines 30-32 has a similar heuristic score (~90%)). Read and verify this range before editing.
+```text
+[edit failure: not-found]
+Batch status: 0/2 replacements written. Fix edits[1] and resubmit the complete batch against the original file; no earlier replacement was applied.
 ```
-function firstHandler() {
-	work();
-}
-```
 
-No changes were written — the file was not modified.
-````
+Only snippets explicitly presented as retryable may be copied directly into `oldText`. Low-confidence, competing, stale, oversized, or omitted candidates require verification. Suggested `read_symbol` calls get the enclosing source declaration without another search for its boundary. Similarity scores are heuristics, not probabilities.
 
-Similarity scores are heuristics, not probabilities.
+### Verified read evidence
 
-## Behavior and compatibility
+For repeated **literal** text, edit can select an occurrence only when exactly one tracked occurrence is fully contained in the newest verified same-file read result in Pi's active, compaction-aware **stored session context**.
 
-The normal matching path follows Pi's built-in edit implementation:
+Both readers participate:
 
-- exact match first, then fuzzy fallback for trailing whitespace, smart quotes, dashes, Unicode compatibility forms, and Unicode spaces
-- uniqueness checked in fuzzy-normalized space
-- all edits matched against the original content rather than applied incrementally
-- overlap and no-change detection
-- CRLF restoration and UTF-8 BOM preservation
-- built-in-compatible success details (`details.diff`, `details.patch`, and `details.firstChangedLine`)
-- no custom renderers, so Pi's built-in edit renderer is inherited
+- Built-in `read`: reproduce its current LF-normalized output and truncation format.
+- `read_symbol`: regenerate the result from the original arguments and current source. Snapshot, selection, envelope, and displayed source must all agree. Result `details` alone are never trusted.
 
-Intentional safety/compatibility differences are:
+Only displayed source is evidence. Outline entries, unseen parts of partial symbols, and omitted final newline separators are not. The newest same-file failed, missing, malformed, or stale result blocks fallback to an older read. Retained-tail compaction messages are supported when the host exposes them. Canonical paths support symlink aliases.
 
-- 1–100 edits are accepted per call; empty batches are rejected by the public schema
-- empty and fuzzy-normalized-empty `oldText` values are rejected
-- invalid UTF-8 and NUL-containing files are rejected rather than silently transcoded
-- conservative stored-read-based selection may resolve repeated literal text
-- self-overlapping string occurrences retain Pi's non-overlapping counting policy
+This verifies stored context, not the final provider payload: other extensions can remove messages or rewrite requests. Built-in BOM-bearing read output remains conservatively rejected; `read_symbol` deliberately strips a UTF-8 BOM and normalizes CRLF before parsing and snapshotting. Fuzzy-equivalent ambiguity and highly repetitive files fail closed.
 
-The argument compatibility shim accepts `edits` as an array, JSON string, single edit object, or legacy top-level `oldText`/`newText`. Preparation is pure and idempotent.
+## Edit safety and compatibility
 
-### Read-evidence boundary
+The matching engine preserves exact-first/fuzzy-fallback behavior, fuzzy-space uniqueness, original-file batch matching, overlap/no-change checks, CRLF restoration, and UTF-8 BOM preservation. Success details keep Pi's `diff`, `patch`, and `firstChangedLine` shape; the built-in edit renderer is inherited.
 
-Read evidence is taken from Pi's active, compaction-aware **stored session context**. Retained-tail messages are handled when the host exposes them. The newest same-file read must have a matching successful result and reproduce built-in read formatting for the current LF-normalized content. Missing, failed, malformed, or stale newest evidence blocks fallback to older intent.
+Intentional safeguards include 1–100 replacements per call, rejection of empty/fuzzy-empty anchors, and rejection of invalid UTF-8 or NUL-containing files. Self-overlapping strings retain Pi's non-overlapping occurrence-counting policy. The pure compatibility shim accepts array, JSON-string, single-object, and legacy top-level edit arguments.
 
-This is not proof of the final provider payload: another extension may remove messages in a `context` hook or rewrite the provider request. CRLF read output is intentionally compared after LF normalization, so this guarantee is content/format verification rather than literal byte identity. BOM-bearing read output is conservatively rejected because edit matching strips the BOM. Fuzzy/Unicode-equivalent ambiguity and highly repetitive files also fail closed.
+Both tools use the **local filesystem**. They do not inherit an SSH, container, or sandbox backend. File mutations use Pi's shared mutation queue. Immediately before writing, edit rechecks file identity and content to catch many external changes.
 
-### Local filesystem and commit guarantees
+The final write remains an **in-place overwrite**, not a cross-process lock, race-free compare-and-swap, or crash-safe atomic transaction. Another process can change a file after the check. A rejected write may leave the file unchanged, partially written, or fully written: inspect it before retrying. A resolved write is the commit boundary; later cancellation cannot roll it back. In-place writes preserve existing symlink/hard-link semantics.
 
-This override uses local Node.js filesystem operations. It does **not** inherit an SSH, container, sandbox, or other custom edit backend.
-
-All replacements are analyzed before writing, so a matching/overlap/no-change/diagnostic failure starts no write. Immediately before writing, the tool performs a best-effort content and file-identity recheck to catch many external modifications.
-
-The final write is still an in-place filesystem overwrite:
-
-- it is not a cross-process lock or race-free compare-and-swap
-- it is not rollback- or crash-safe filesystem atomicity
-- another process can modify the file after the pre-write check
-- a rejected write may leave the file unchanged, partially written, or fully written; inspect it before retrying
-
-A resolved write is the tool's commit boundary. The extension returns the committed result rather than throwing a post-write cancellation error. A host may still suppress result delivery when cancelling the surrounding tool run; cancellation cannot roll back a completed filesystem write. Temporary-file/rename replacement is deliberately not used because it can replace symlinks, break hard-link semantics, or alter metadata without a carefully defined cross-platform policy.
-
-### Output and resource bounds
-
-Diagnostic text is kept below Pi's 50 KB / 2,000-line tool-output limits. Markdown snippets are added atomically so a fence is never cut; oversized snippets are omitted with read guidance. Success expansion is skipped for oversized files. Closest-match work has explicit query, line, and operation budgets and falls back to concise read guidance when exhausted.
-
-`details.diff` and `details.patch` remain complete for renderer compatibility and are not blindly truncated as diagnostic text.
-
-## Host compatibility
-
-Pi's packaging guidance requires wildcard peer dependencies for Pi core packages. This package follows that guidance rather than bundling Pi. Version 0.2.1 is typechecked and tested against `@earendil-works/pi-coding-agent` 0.82.1; host upgrades should run the read-format, exported-helper, renderer-shape, and session-context compatibility tests.
+Edit diagnostics stay below Pi's 50 KiB / 2,000-line limits. Snippets are omitted atomically when needed, and similarity work is bounded. Renderer `details.diff` and `details.patch` remain complete rather than being blindly truncated.
 
 ## Development
 
-```bash
-npm run check     # typecheck + tests
-npm test          # vitest only
-```
-
-## Publishing
-
-From the repository root:
+Tested against `@earendil-works/pi-coding-agent` 0.82.1. Pi/typebox peer dependencies remain wildcard ranges, as Pi's packaging guidance requires. Re-run the read-format, session-evidence, and renderer compatibility tests on host upgrades.
 
 ```bash
-npm run check --workspace=@khanhicetea/pi-better-tool
-npm pack --dry-run --workspace=@khanhicetea/pi-better-tool
-npm publish --workspace=@khanhicetea/pi-better-tool
+npm run check --workspace @khanhicetea/pi-better-tool
+npm pack --dry-run --workspace @khanhicetea/pi-better-tool
 ```
+
+Tests cover existing edit behavior, recovery round-trips, syntax boundaries across languages, nested/duplicate symbols, pagination, encoding/size failures, cancellation, and read-to-edit evidence.
 
 ## License
 

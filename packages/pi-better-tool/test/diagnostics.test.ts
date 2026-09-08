@@ -294,6 +294,38 @@ describe("formatEditFailure", () => {
 		expect(message).toContain("Diagnostic output was bounded");
 	});
 
+	it("reports the unapplied batch and gives next-call arguments for competing targets", () => {
+		const content = "const target = chooseA;\nseparator\nconst target = chooseB;\n";
+		const edits = [{ oldText: "separator", newText: "kept" }, { oldText: "const target = chooseC;", newText: "changed" }];
+		const result = analyzeEdits(content, edits);
+		if (result.ok) throw new Error("expected failure");
+		const message = formatEditFailure({ path: "a.ts", normalizedContent: content, edits, failure: result.failure });
+		expect(message).toContain("Batch status: 0/2 replacements written. Fix edits[1]");
+		expect(message).toContain('read_symbol {"path":"a.ts","line":1}');
+		expect(message).toContain('read_symbol {"path":"a.ts","line":3}');
+	});
+
+	it("warns when the intended replacement text already exists", () => {
+		const edits = [{ oldText: "before()", newText: "after()" }];
+		const result = analyzeEdits("after()\n", edits);
+		if (result.ok) throw new Error("expected failure");
+		const message = formatEditFailure({ path: "a.ts", normalizedContent: "after()\n", edits, failure: result.failure });
+		expect(message).toContain("Replacement text already appears at line 1");
+		expect(message).toContain("change may already be applied");
+	});
+
+	it("returns a usable merged anchor for overlapping edits", () => {
+		const content = "function work() {\n  one();\n  two();\n}\n";
+		const edits = [{ oldText: "function work() {\n  one();", newText: "x" }, { oldText: "  one();\n  two();", newText: "y" }];
+		const result = analyzeEdits(content, edits);
+		if (result.ok) throw new Error("expected failure");
+		const message = formatEditFailure({ path: "a.ts", normalizedContent: content, edits, failure: result.failure });
+		expect(message).toContain("Retryable merged oldText");
+		const snippet = message.match(/(`{3,})\n([\s\S]*?)\n\1/)?.[2];
+		expect(snippet).toBeDefined();
+		expect(analyzeEdits(content, [{ oldText: snippet!, newText: snippet!.replace("one()", "ONE()").replace("two()", "TWO()") }]).ok).toBe(true);
+	});
+
 	it("renders overlap with line ranges", () => {
 		const overlapEdits: EditOp[] = [
 			{ oldText: "func a() {\n\tcall()", newText: "x" },
