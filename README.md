@@ -7,7 +7,7 @@ A monorepo containing reusable [Pi](https://pi.dev) extension packages.
 - [`pi-multi-codex`](./packages/pi-multi-codex) — multiple OpenAI Codex account slots
 - [`pi-dede`](./packages/pi-dede) — context-aware Pi sub-agent delegation with safe master forks and a parent orchestration skill
 - [`pi-wui`](./packages/pi-wui) — browser-based Web UI portal and MCP server
-- [`pi-better-tool`](./packages/pi-better-tool) — better built-in tools: an `edit` override whose failures return recovery context (closest match + disambiguation snippets) instead of forcing a file re-read
+- [`pi-better-tool`](./packages/pi-better-tool) — safe `edit` recovery context and `read_symbol` for whole functions, methods, and classes by line or name
 - [`pi-tactician`](./packages/pi-tactician) — guides models to batch independent work into fewer, context-efficient inference rounds and reports missed batching opportunities
 - [`web-access-kit`](./packages/web-access-kit) — webpage reading and Google Search tools
 
