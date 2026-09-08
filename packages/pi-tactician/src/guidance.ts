@@ -50,7 +50,7 @@ These are readiness rules, not mandatory phases. Do not invent a planning round
 or wait for unrelated investigation when a useful independent call is ready.
 
 Illustrative sequences (brackets mean sibling calls, not a new tool):
-- Known reads A and B: [read A, read B], not read A → round trip → read B.
+- Known reads A, B, ..., X: [read A, read B, ..., read X], not read A → round trip → read B → round trip →  ...
 - Search discovers A: search → inspect result → read A. Do not guess A early.
 - Known independent edits A and B: [edit A, edit B] → inspect results →
   [independent relevant checks]. Do not put checks beside unfinished mutations.
