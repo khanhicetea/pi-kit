@@ -46,6 +46,7 @@ export class RpcChild {
   private stdinQueue: Promise<void> = Promise.resolve();
   private settled = false;
   private closing = false;
+  private stopping = false;
   firstEventAt?: number;
   private exited = false;
   private resolved = false;
@@ -142,7 +143,10 @@ export class RpcChild {
 
   /** Ask the child to abort its current operation gracefully. */
   abort(): void {
-    void this.send({ type: "abort" });
+    // Stop is irreversible for this one-assignment transport. Send both controls
+    // synchronously, before runner cleanup closes stdin; discard queued prompts/steers.
+    this.stopping = true;
+    this.writeCommands({ type: "clear_queue" }, { type: "abort" });
   }
 
   /** Close stdin; a well-behaved RPC child exits cleanly on EOF. */
@@ -158,17 +162,18 @@ export class RpcChild {
   private send(command: Record<string, unknown>): Promise<void> {
     this.stdinQueue = this.stdinQueue.then(
       () => {
-        const stdin = this.process.stdin;
-        if (!stdin || stdin.destroyed || stdin.writableEnded || this.exited || this.closing) return;
-        try {
-          stdin.write(`${JSON.stringify(command)}\n`);
-        } catch {
-          /* child gone */
-        }
+        if (!this.stopping) this.writeCommands(command);
       },
       () => undefined,
     );
     return this.stdinQueue;
+  }
+
+  private writeCommands(...commands: Record<string, unknown>[]): void {
+    const stdin = this.process.stdin;
+    if (!stdin || stdin.destroyed || stdin.writableEnded || this.exited || this.closing) return;
+    try { stdin.write(commands.map((command) => JSON.stringify(command) + "\n").join("")); }
+    catch { /* child gone */ }
   }
 
   private handleEvent(event: Record<string, any>): void {

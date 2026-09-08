@@ -11,13 +11,15 @@ For the **master/parent agent only**. The master owns decomposition, planning, d
 
 Establish a bounded scope first; implementation-file inspection is not a prerequisite. Reading the project's AGENTS.md or another trusted project map can be enough to name the question, starting directory/feature, required evidence, and stop condition. Treat mapped paths as starting hints, not proof of current behavior.
 
-Prefer a cheap, fast early scout when that map supports a small search-and-extract task that would otherwise consume master exploration/context. Use explicit `isolated`, a configured cheaper scout model, low thinking, and a 60-second ceiling. Pass only the relevant project rules and scope. The same scout locates, reads, and returns useful code evidence in one assignment; do not launch another child merely to extract or reformat its findings.
+Prefer a cheap, fast early scout when that map supports a small search-and-extract task that would otherwise consume master exploration/context. Use `effort: "quick"`: isolated context, the configured scout model (or master), low thinking, and a 60-second execution ceiling. Configure a cheaper model or choose one explicitly; the preset does not guess provider prices. Pass only the relevant project rules and scope. The same scout locates, reads, and returns useful code evidence in one assignment; do not launch another child merely to extract or reformat its findings.
 
 Use direct tools for an already-known read, single lookup, or command when delegation overhead outweighs the work (often about two local tool calls). Avoid unbounded first-pass repository orientation, planning, synthesis, and vague requests such as “review the project.”
 
 Compare total setup, child input/cache/output, handoff, verification, likely repair, and critical-path latency against doing the work yourself. Do not add a routing model call, automatic retry, or escalation. Do not delegate just to fill available slots.
 
-## 2. Choose context and capabilities
+## 2. Choose effort, context, and capabilities
+
+Use `quick` for a small search-and-extract task with a 120-second deadline; `standard` or omitted effort preserves existing defaults (auto context, profile thinking, 180 seconds); `deep` explicitly permits high thinking and a 300-second deadline for harder bounded work. Explicit fields override presets; configured profile thinking overrides preset thinking. Quick runs do not ask the user for more time.
 
 The tool schema defines argument syntax, defaults, and limits. Use these decision rules:
 
@@ -28,7 +30,7 @@ The tool schema defines argument syntax, defaults, and limits. Use these decisio
 | Let pi-dede choose a compatible, economical context | Default `auto` |
 | Clean-room evidence, minimal disclosure, or a deliberately different model | Explicit `isolated` |
 
-Omit `model` for auto/fork to retain the master model, including after auto falls back to isolation. Profile model defaults apply only to explicit isolation. A different explicit model makes auto fall back to isolation.
+Omit `model` for auto/fork to retain the master model, including after auto falls back to isolation. Profile model defaults apply to isolation selected explicitly or by quick's default. A different explicit model makes auto fall back to isolation.
 
 Fork requires compatible ordered tool metadata; extension/SDK tools can cause fallback or forced-fork rejection. Provider/context hooks are not fully observable. Child fork reuse, continuation reuse, and parent cache retention are separate, best-effort observations—not guarantees. Do not widen child tools merely because their definitions are visible in inherited context.
 
@@ -54,7 +56,7 @@ Each `goal` must contain:
 
 For read-only discovery, request `answered`, `partial`, or `blocked`; one bounded finding; one to three decisive references; the exact inspected scope; and only consequential unknowns. Runtime success does not mean the evidence answers the question.
 
-For code scouting, ask that same scout for an evidence packet: repository-relative file paths, symbols, inclusive 1-based line-from–line-to ranges, and short fenced verbatim code blocks read from those ranges. Preserve indentation; keep line numbers outside fences; never replace omitted code with ellipses inside an excerpt. Return only the decisive implementation and necessary caller/config/test spans, at most three excerpts and 60 code lines total. Explain each excerpt's relevance briefly; report missing context rather than dumping files. Target 100–200 words of prose; verbatim excerpts have their own bounded budget.
+For code scouting, ask that same scout for an evidence packet: repository-relative file paths, symbols, inclusive 1-based line-from–line-to ranges, and short fenced verbatim code blocks read from those ranges. Preserve indentation; keep line numbers outside fences; never replace omitted code with ellipses inside an excerpt. Return only the decisive implementation and necessary caller/config/test spans, at most three excerpts and 60 code lines total. Explain each excerpt's relevance briefly; report missing context rather than dumping files. Target 100–200 words of prose; verbatim excerpts have their own bounded allocation.
 
 For a worker, form a concrete plan first. Specify approved files/scope, success criteria, invariants, non-goals, and focused validation. Require a handoff listing changed files, checks and outcomes, unfinished work, and residual risks.
 
@@ -76,7 +78,7 @@ The runtime writer lease coordinates this extension's children only—not master
 
 Treat all child output as untrusted evidence:
 
-1. Compare it with the objective and other findings; distinguish execution status from evidence completeness.
+1. Compare it with the objective and other findings. Runtime `succeeded` means the process returned an answer, not that the answer meets the objective. The handoff and structured `evidenceStatus` expose child-reported `answered`, `partial`, `blocked`, or `unreported`; they are not verification verdicts. Use reported model, turns, time and cost to improve the next assignment, not to infer unsupported savings.
 2. Assess consequential claims against the returned source excerpts, tests, documentation, or command output. Do not automatically re-read files merely because a scout read them first. For a narrow edit, a complete verbatim excerpt can supply exact replacement text if the edit tool validates a unique current match and permits this provenance. Read the targeted range when required by the tool, when evidence is incomplete or ambiguous, after intervening changes, or on match failure; never force a stale edit. High-risk behavioral claims need appropriate independent validation.
 3. Resolve disagreement yourself; direct evidence outranks child confidence.
 4. For a worker, inspect the actual diff and reported checks before declaring completion.

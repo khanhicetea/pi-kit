@@ -26,7 +26,7 @@ const valid = (overrides: Partial<DedeDelegateParams> = {}): DedeDelegateParams 
 afterEach(() => { delete process.env.PI_DEDE_DEPTH; });
 
 describe("public schema", () => {
-  it("accepts v0.2 budgets and rejects removed workflow fields", () => {
+  it("accepts supported delegation fields and rejects removed workflow fields", () => {
     const input = {
       objective: "Inspect",
       agents: [{ id: "a", goal: "x", timeoutSeconds: 30, env: { CHILD_MODE: "inspect" } }],
@@ -40,6 +40,10 @@ describe("public schema", () => {
     expect(Check(DedeDelegateSchema, {
       ...input,
       agents: [{ ...input.agents[0], profile: "planner" }],
+    })).toBe(false);
+    expect(Check(DedeDelegateSchema, {
+      ...input,
+      agents: [{ ...input.agents[0], budget: { maxTurns: 1 } }],
     })).toBe(false);
     expect(Check(DedeDelegateSchema, {
       ...input,
@@ -78,6 +82,12 @@ describe("semantic validation", () => {
       contextMode: "auto",
       resolvedContextMode: "isolated",
     });
+  });
+
+  it("keeps effort preset timeouts within the 120–300 second range", () => {
+    expect(validateAndResolve(valid({ agents: [{ id: "quick", goal: "x", effort: "quick" }] }), context)[0].timeoutSeconds).toBe(120);
+    expect(validateAndResolve(valid({ agents: [{ id: "standard", goal: "x", effort: "standard" }] }), context)[0].timeoutSeconds).toBe(180);
+    expect(validateAndResolve(valid({ agents: [{ id: "deep", goal: "x", effort: "deep" }] }), context)[0].timeoutSeconds).toBe(300);
   });
 
   it("preserves context mode across a lineage and rejects continuation overrides", () => {
@@ -344,10 +354,10 @@ describe("semantic validation", () => {
     ] }), context)).toThrow(/At most one mutation-capable agent/);
   });
 
-  it("checks reduced UTF-8 byte limits", () => {
+  it("keeps objective and shared-context byte limits while allowing large goals", () => {
     expect(() => validateAndResolve(valid({ objective: "🦊".repeat(1025) }), context)).toThrow(/UTF-8 bytes/);
     expect(() => validateAndResolve(valid({ sharedContext: "界".repeat(5462) }), context)).toThrow(/UTF-8 bytes/);
-    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "🦊".repeat(1025) }] }), context)).toThrow(/UTF-8 bytes/);
+    expect(() => validateAndResolve(valid({ agents: [{ id: "a", goal: "🦊".repeat(1025) }] }), context)).not.toThrow();
   });
 
   it("rejects recursive delegation", () => {

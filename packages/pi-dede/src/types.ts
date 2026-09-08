@@ -5,6 +5,8 @@ export const PROFILES = ["scout", "reviewer", "debugger", "security", "tester", 
 export const TOOL_PRESETS = ["read-only", "coding", "none", "custom"] as const;
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export const CONTEXT_MODES = ["auto", "fork", "isolated"] as const;
+export const EFFORT_LEVELS = ["quick", "standard", "deep"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 export type BuiltinTool = (typeof BUILTIN_TOOLS)[number];
 export type DedeProfile = (typeof PROFILES)[number];
@@ -26,6 +28,7 @@ export type ProfileDefaults = Partial<Record<DedeProfile, ProfileDefault>>;
 export interface DedeAgentRequest {
   id: string;
   profile?: DedeProfile;
+  effort?: EffortLevel;
   goal: string;
   /** Reuse a safe master-conversation prefix, remain isolated, or let pi-dede decide. */
   contextMode?: ContextMode;
@@ -65,6 +68,7 @@ export interface ContinuationReference {
 export interface ResolvedAgent {
   id: string;
   profile: DedeProfile;
+  effort?: EffortLevel;
   goal: string;
   contextMode: ContextMode;
   resolvedContextMode: ResolvedContextMode;
@@ -140,6 +144,8 @@ export interface DedeChildResult {
   resumedFrom?: string;
   resumeHandle?: string;
   finalText: string;
+  /** Child-reported evidence completeness; never a verification verdict. */
+  evidenceStatus?: "answered" | "partial" | "blocked" | "unreported";
   durationMs: number;
   exitCode?: number;
   stopReason?: string;

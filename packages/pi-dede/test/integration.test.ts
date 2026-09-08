@@ -50,6 +50,53 @@ process.stdin.on("data", (chunk) => {
 });`;
 
 describe("fake Pi integration", () => {
+  it("runs a quick scout without inspecting the master transcript or tool surface", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-quick-"));
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(directory, "agent-home");
+    const fake = join(directory, "fake-pi.mjs");
+    await writeFile(fake, `
+      ${RPC_READER}
+      process.stdin.on("end", () => process.exit(0));
+      function onCommand(cmd) {
+        if (cmd.type !== "prompt") return;
+        __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        __send({ type: "message_end", message: { role: "assistant", stopReason: "stop",
+          content: [{ type: "text", text: "## Status\\nanswered\\n## Answer\\n- Evidence" }] } });
+        __send({ type: "agent_end" }); __send({ type: "agent_settled" });
+      }
+    `);
+    process.env.PI_DEDE_EXECUTABLE = fake;
+    const unexpectedScan = () => { throw new Error("unnecessary master scan"); };
+    let tool: any;
+    let shutdown: any;
+    dedeExtension({
+      registerTool(value: any) { tool = value; },
+      getActiveTools: unexpectedScan, getAllTools: unexpectedScan,
+      on(event: string, handler: any) { if (event === "session_shutdown") shutdown = handler; },
+    } as unknown as ExtensionAPI);
+    const confirm = vi.fn();
+    const ctx = {
+      cwd: directory, hasUI: true, model: { provider: "fake", id: "model" },
+      modelRegistry: { getAll: () => [{ provider: "fake", id: "model" }], getRegisteredProviderIds: () => [] },
+      sessionManager: { getSessionId: () => "parent", getBranch: unexpectedScan },
+      isProjectTrusted: () => false, ui: { setStatus() {}, confirm },
+    };
+    try {
+      const response = await tool.execute("quick", { objective: "Establish invariant", agents: [{ id: "quick", profile: "scout", effort: "quick", goal: "Inspect the named seam and stop" }] }, undefined, undefined, ctx);
+      expect(response.details.results[0]).toMatchObject({
+        status: "succeeded", evidenceStatus: "answered", contextModeResolved: "isolated",
+        timeoutSeconds: 120, continuationHandle: expect.any(String),
+      });
+      expect(confirm).not.toHaveBeenCalled();
+    } finally {
+      await shutdown?.({}, ctx);
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("forks the safe master prefix, preserves the visible tool surface, and sends bounded runtime policy", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-master-context-"));
     const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -633,7 +680,7 @@ describe("fake Pi integration", () => {
 
     try {
       const { result } = await runChild({
-        // runChild accepts an already-resolved agent; use a short transport budget here
+        // runChild accepts an already-resolved agent; use a short transport timeout here
         // so the integration test exercises real steering without waiting for schema minima.
         agent: { ...agent, timeoutSeconds: 6 },
         cwd: directory,

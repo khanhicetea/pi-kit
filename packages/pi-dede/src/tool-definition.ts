@@ -1,6 +1,6 @@
 import { DedeDelegateSchema } from "./schema.ts";
 
-export const DEDE_TOOL_DESCRIPTION = "Run one to three Pi sub-agents. Successful children return a continuation handle; timed-out children may return a resume handle. At most one child per run may have bash/edit/write; writers are serialized across concurrent runs.";
+export const DEDE_TOOL_DESCRIPTION = "Run one to three bounded Pi sub-agents. Use effort: quick for small isolated tasks. Results include evidence status, usage and a continuation handle on success or resume handle on timeout. Output: 4KiB/child, 12KiB/run. At most one child may have bash/edit/write; writers serialize across calls.";
 
 export const DEDE_TOOL_PROMPT_SNIPPET = "Delegate tasks to Pi sub-agents, continue a related finished child, or resume a timed-out child";
 

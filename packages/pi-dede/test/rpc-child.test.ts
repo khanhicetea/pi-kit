@@ -16,6 +16,19 @@ beforeEach(() => {
 const create = () => new RpcChild({ invocation: { command: "fake", args: [], env: {} }, cwd: "/tmp" });
 
 describe("RPC rejection lifecycle", () => {
+  it("sends clear_queue and abort before immediate disposal, discarding queued work", async () => {
+    const child = create();
+    const write = vi.spyOn(processDouble.stdin, "write");
+    child.prompt("queued task must not run");
+    child.steer("queued warning must not run");
+    child.abort();
+    child.close();
+    await Promise.resolve();
+    await Promise.resolve();
+    const commands = write.mock.calls.flatMap(([data]) => String(data).trim().split("\n").map((line) => JSON.parse(line).type));
+    expect(commands).toEqual(["clear_queue", "abort"]);
+    child.detachOutput();
+  });
   it("settles a rejected initial prompt without waiting for process exit", async () => {
     const child = create();
     child.prompt("task");

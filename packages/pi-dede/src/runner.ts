@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { evidenceStatus } from "./handoff.ts";
 import { buildChildInvocation } from "./invocation.ts";
 import { RpcChild, type RpcChildOutcome } from "./rpc-child.ts";
 import { childUsage, type CollectedProtocol } from "./json-events.ts";
@@ -393,7 +394,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     if (timeoutExtensionPromptTimer) clearTimeout(timeoutExtensionPromptTimer);
     timeoutExtensionPromptController?.abort();
     options.signal?.removeEventListener("abort", onAbort);
-    // Reap and drain with a finite budget; a closed leader is not a closed group.
+    // Reap and drain within a finite window; a closed leader is not a closed group.
     child.close();
     await Promise.race([child.closed, delay(DISPOSE_CLOSE_MS)]);
     cleanupConfirmed = await options.manager.terminate(child.process);
@@ -420,7 +421,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     errorMessage ??= "Delegation cancelled";
   } else if (timedOut) {
     status = "timed_out";
-    errorMessage = `Timed out after ${options.timeoutSeconds} seconds`;
+    errorMessage = `Timed out after ${effectiveTimeoutSeconds} seconds`;
   } else if (outcome?.promptRejected) {
     status = "failed";
     errorMessage ??= outcome.promptRejected;
@@ -476,6 +477,7 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
       continuationIndex: options.agent.resume.continuationIndex,
     } : { continuationIndex: 0 }),
     finalText: capped.text,
+    evidenceStatus: evidenceStatus(rawFinalText),
     durationMs: Date.now() - startedAt,
     diagnostics: { disposalMs, executionMs: disposalStartedAt - startedAt,
       malformedLines: protocol.malformedLines, oversizedLines: protocol.oversizedLines, softWarningSent, cleanupConfirmed },

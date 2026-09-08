@@ -215,8 +215,12 @@ export default function dedeExtension(pi: ExtensionAPI): void {
         continuationLookup: (handle) => resumeStore!.peek(handle, "continue"),
         resumeLookup: (handle) => resumeStore!.peek(handle, "resume"),
       });
-      const activeTools = typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [];
-      const forkSnapshot = captureMasterForkSnapshot(ctx, toolCallId, activeTools, typeof pi.getAllTools === "function" ? pi.getAllTools() : undefined);
+      // Isolated/continued assignments need no master transcript or tool-surface scan.
+      const needsFork = validatedAgents.some((agent) => !agent.resume && !agent.continueFrom && agent.contextMode !== "isolated");
+      const activeTools = needsFork && typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [];
+      const forkSnapshot = needsFork
+        ? captureMasterForkSnapshot(ctx, toolCallId, activeTools, typeof pi.getAllTools === "function" ? pi.getAllTools() : undefined)
+        : undefined;
       const agents = validatedAgents.map((agent) => resolveAgentContext(agent, forkSnapshot, config));
 
       const runId = randomUUID();
@@ -363,7 +367,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               additionalArgs: agent.additionalArgs,
               timeoutSeconds: agent.timeoutSeconds,
               maximumTimeoutSeconds: agent.resume ? MAX_RESUME_TIMEOUT_SECONDS : MAX_CHILD_TIMEOUT_SECONDS,
-              onTimeoutExtensionRequest: ({ extensionSeconds, remainingMs, signal: dialogSignal }) =>
+              onTimeoutExtensionRequest: agent.effort === "quick" ? undefined : ({ extensionSeconds, remainingMs, signal: dialogSignal }) =>
                 timeoutExtensionDialogs.request(agent.id, extensionSeconds, remainingMs, dialogSignal),
               onTimeoutExtended: (timeoutSeconds) => {
                 details.results[index] = {

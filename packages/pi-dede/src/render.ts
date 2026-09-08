@@ -1,6 +1,6 @@
+import { DEFAULT_CHILD_TIMEOUT_SECONDS, DEFAULT_RESUME_TIMEOUT_SECONDS, EFFORT_DEFAULTS } from "./schema.ts";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
-import { DEFAULT_CHILD_TIMEOUT_SECONDS, DEFAULT_RESUME_TIMEOUT_SECONDS } from "./schema.ts";
 import type { ChildStatus, DedeActivity, DedeChildResult, DedeDelegateParams, DedeToolDetails } from "./types.ts";
 
 function preview(value: string, max = 54): string {
@@ -58,13 +58,13 @@ export function renderDedeCall(args: DedeDelegateParams, theme: any, context: an
     const reusing = agent.resume || agent.continueFrom;
     const profile = reusing ? "existing profile" : agent.profile ?? "custom";
     const preset = reusing ? "existing capabilities" : agent.toolPreset ?? (["worker", "tester", "documenter"].includes(profile) ? "coding" : "read-only");
-    const timeout = agent.timeoutSeconds ?? args.timeoutSeconds ?? (agent.resume ? DEFAULT_RESUME_TIMEOUT_SECONDS : DEFAULT_CHILD_TIMEOUT_SECONDS);
+    const timeout = agent.timeoutSeconds ?? args.timeoutSeconds ?? (agent.resume ? DEFAULT_RESUME_TIMEOUT_SECONDS : agent.effort ? EFFORT_DEFAULTS[agent.effort].timeoutSeconds : DEFAULT_CHILD_TIMEOUT_SECONDS);
     const lineage = agent.resume
       ? ` · resume ${preview(agent.resume, 18)}`
       : agent.continueFrom
         ? ` · continue ${preview(agent.continueFrom, 18)}`
         : "";
-    const contextMode = reusing ? "" : ` · ${agent.contextMode ?? "auto context"}`;
+    const contextMode = reusing ? "" : ` · ${agent.contextMode ?? (agent.effort === "quick" ? "isolated" : "auto context")}${agent.effort ? ` · ${agent.effort}` : ""}`;
     text += `\n  ${theme.fg("accent", agent.id)} ${theme.fg("muted", `· ${profile} · ${preset} · ${timeout}s${contextMode}${lineage}`)}`;
     text += `\n    ${theme.fg("dim", preview(agent.goal, 110))}`;
   }
@@ -148,7 +148,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     container.addChild(new Spacer(1));
     container.addChild(new Text(`${icon(child.status, theme)} ${theme.fg("accent", theme.bold(child.id))} ${theme.fg("muted", `${child.status} · ${child.profile} · ${child.model} · ${child.thinking}`)}`, 0, 0));
     container.addChild(new Text(theme.fg("muted", "Assignment: ") + theme.fg("dim", child.goal), 0, 0));
-    container.addChild(new Text(theme.fg("muted", "Budget: ") + theme.fg("dim", `${child.timeoutSeconds}s · ${child.tools.join(", ") || "no tools"}`), 0, 0));
+    container.addChild(new Text(theme.fg("muted", "Execution: ") + theme.fg("dim", `${child.timeoutSeconds}s · ${child.tools.join(", ") || "no tools"}`), 0, 0));
     const contextDetail = child.contextModeResolved === "fork" && child.forkedFrom
       ? `fork · parent ${child.forkedFrom.sessionId} · entry ${child.forkedFrom.entryId}${child.forkedFrom.contextTokens !== undefined ? ` · ${tokens(child.forkedFrom.contextTokens)} inherited tokens` : ""}`
       : `isolated${child.contextFallbackReason ? ` · ${child.contextFallbackReason}` : ""}`;

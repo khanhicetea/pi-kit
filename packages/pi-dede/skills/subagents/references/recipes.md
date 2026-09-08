@@ -19,9 +19,7 @@ Once the master reads AGENTS.md and can bound the search, it need not inspect th
   "agents": [{
     "id": "early-scout",
     "profile": "scout",
-    "contextMode": "isolated",
-    "thinking": "low",
-    "timeoutSeconds": 60,
+    "effort": "quick",
     "goal": "Find <one behavior> within <mapped directory>, following at most one direct dependency outside it. Read the decisive implementation and necessary test/caller spans. Return answered/partial/blocked, inspected scope, and at most three verbatim fenced excerpts totaling at most 60 code lines, each with repository-relative path, symbol, inclusive 1-based line range, and relevance. Keep prose to 100–200 words. No edits or broad exploration. Stop once the behavior is evidenced; report gaps if the boundary prevents an answer."
   }]
 }
@@ -59,9 +57,7 @@ This status describes whether the evidence answers the question; it is separate 
   "agents": [{
     "id": "classify",
     "profile": "scout",
-    "contextMode": "isolated",
-    "thinking": "low",
-    "timeoutSeconds": 60,
+    "effort": "quick",
     "goal": "Classify only <failure family> in the named existing log and paths. Return 100–200 words: verdict, decisive line citations, likely owning symbol, material uncertainty and unfinished work. Inconclusive is valid. No reruns, edits or broad exploration; stop when this classification is supported."
   }]
 }

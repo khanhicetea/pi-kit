@@ -1,5 +1,13 @@
 # Audit implementation handoff
 
+## Effort and handoff rewrite
+
+The current source adds opt-in quick/standard/deep effort presets and child-reported evidence status. Existing omitted-effort calls retain standard behavior. Quick routing uses configured profile models only; it does not select providers by guessed prices. Quick and explicitly isolated/continued calls avoid unnecessary master transcript discovery.
+
+RPC abort writes clear_queue and abort together before immediate disposal and suppresses queued prompts/steers. This fixes a queue/disposal race that could drop the abort command. Empty abort/error messages retain prior evidence. Output allocation reserves per-child metadata without a final aggregate head truncation; evidence completeness never changes runtime-success classification.
+
+Validation uses unit tests and fake-Pi subprocess integration, not paid-provider benchmarks. The real-Pi/version/platform matrix and measured end-to-end savings remain unverified.
+
 > Historical handoff for hardening changes incorporated before version 0.5.1. Refer to `SPEC.md`, current source, and tests for the active contract.
 
 At the time of this handoff, no tests, builds, installs, paid calls or benchmarks had been run.

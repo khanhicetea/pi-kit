@@ -1,6 +1,6 @@
 # pi-dede Specification
 
-**Status:** Implemented contract for version 0.5.1. Unit and fake-protocol integration tests cover the local runtime; a real-Pi supported-version matrix remains pending. [IMPLEMENTATION-NOTES.md](./IMPLEMENTATION-NOTES.md) records hardening decisions and unresolved platform limitations.
+**Status:** Current working-tree contract, including the effort and handoff rewrite. Existing calls retain standard defaults; version-2 details gain optional evidence fields. Unit and fake-protocol integration tests cover the local runtime; a real-Pi supported-version matrix remains pending. [IMPLEMENTATION-NOTES.md](./IMPLEMENTATION-NOTES.md) records hardening decisions and unresolved platform limitations.
 
 **Package:** `@khanhicetea/pi-dede`
 
@@ -17,7 +17,7 @@ The master owns decomposition, planning, synthesis, comparison, verification, an
 
 A successfully finished child exposes a session-scoped continuation handle. The master may use it for a later bounded task that directly benefits from the same child's context. The continuation reopens the same Pi session in a fresh RPC process, preserves the child's immutable role and capabilities, and requires mutable repository state to be revalidated. A timed-out child instead exposes a resume handle for a deliberate short completion attempt when partial output indicates it is close to completion.
 
-The extension must discourage delegation for first-pass orientation, one-file/symbol lookups, planning, synthesis, overlapping tasks, and work likely finishable in roughly two local tool calls.
+The extension must discourage unbounded first-pass orientation, one-file/symbol lookups, planning, synthesis, overlapping tasks, and work likely finishable in roughly two local tool calls. A trusted project map can provide enough scope for an early scout without inspecting implementation files first.
 
 ## 2. Design principles
 
@@ -52,6 +52,7 @@ type BuiltinTool = "read" | "grep" | "find" | "ls" | "bash" | "edit" | "write";
 interface AgentRequest {
   id: string;                 // /^[a-z][a-z0-9-]{0,31}$/
   profile?: Profile;          // default: custom; forbidden on continue/resume
+  effort?: "quick" | "standard" | "deep";
   goal: string;               // bounded assignment; only what remains on resume
   contextMode?: ContextMode;  // default auto; forbidden on continue/resume
   continueFrom?: string;      // handle from a successfully finished child
@@ -73,7 +74,7 @@ interface DelegateRequest {
 }
 ```
 
-Unknown fields are rejected. `continueFrom` and `resume` are mutually exclusive, and the same lineage handle may appear only once per request. A request containing `resume` must contain exactly one agent. Handles must be available in the current master runtime and are claimed atomically, all-or-nothing. Continued and resumed agents keep the old context mode, profile, system prompt, model, thinking, environment overrides, additional arguments, and tools; `contextMode`, `profile`, `systemPrompt`, `toolPreset`, `tools`, `model`, `thinking`, and `env` overrides are rejected. Only `id`, `goal`, and `timeoutSeconds` may change. A continuation may use the normal 30–1800 second deadline; a resume remains limited to 30–180 seconds.
+Unknown fields are rejected. `continueFrom` and `resume` are mutually exclusive, and the same lineage handle may appear only once per request. A request containing `resume` must contain exactly one agent. Handles must be available in the current master runtime and are claimed atomically, all-or-nothing. Continued and resumed agents keep the old context mode, profile, system prompt, model, thinking, environment overrides, additional arguments, and tools; `contextMode`, `profile`, `effort`, `systemPrompt`, `toolPreset`, `tools`, `model`, `thinking`, and `env` overrides are rejected. Only `id`, `goal`, and `timeoutSeconds` may change. A continuation may use the normal 30–1800 second deadline; a resume remains limited to 30–180 seconds.
 
 String limits use UTF-8 bytes:
 
@@ -81,7 +82,6 @@ String limits use UTF-8 bytes:
 |---|---:|
 | `objective` | 4 KiB |
 | `sharedContext` | 16 KiB |
-| `agent.goal` | 4 KiB |
 | `agent.systemPrompt` | 8 KiB |
 | Final merged environment overrides | 64 variables; 16 KiB total |
 | Environment value | 8 KiB |
@@ -97,7 +97,17 @@ Validation completes before temporary files, permits, or child processes are cre
 | `worker` | coding | medium | Execute one approved bounded change |
 | `custom` | read-only | low | Perform one caller-defined narrow specialty |
 
-Effective thinking precedence is explicit request, profile sidecar configuration, then built-in profile default. The master's thinking level is not inherited.
+Effort presets use deterministic defaults, without a routing-model call:
+
+| Effort | Context fallback | Thinking fallback | Timeout |
+|---|---|---|---:|
+| quick | isolated | low | 120s |
+| standard / omitted | auto | profile | 180s |
+| deep | auto | high | 300s |
+
+Explicit context and timeout fields override presets. Quick-selected isolation uses the configured profile model; no configured model means the master model, not an automatically selected cheap provider. Explicit auto/fork preserves normal cache-first model selection. Quick children do not request interactive timeout extensions. Isolated and reused children skip master fork-snapshot discovery.
+
+Effective thinking precedence is explicit request, profile sidecar configuration, effort fallback, then built-in profile default. The master's thinking level is not inherited.
 
 Effective model precedence for `auto`/`fork` is explicit request, then master model; this keeps the default cache-compatible. For explicit `isolated` mode it is explicit request, profile sidecar configuration, then master model. Children are separate Pi processes but retain normal extension discovery. A provider registered through an installed project/global extension is therefore allowed without extra arguments; an extension loaded only in the master can be loaded explicitly through `additionalArgs` with `-e`/`--extension`. If child extension discovery is disabled with `--no-extensions` and no explicit extension is supplied, validation rejects the setup before launch.
 
@@ -131,7 +141,7 @@ MAX_ACTIVE_CHILDREN = 3
 
 The process limit applies across simultaneous tool calls. An agent requests a permit only after its secure prompt files are ready. A separate one-permit mutation semaphore applies across simultaneous calls so two writers cannot clobber the shared workspace. Results preserve request order, regardless of process completion order.
 
-There are no dependency graphs, child-to-child messages, planner handoffs, automatic retries, or background runs. Related continuation and short resume are initiated only by a new master tool call.
+There are no dependency graphs, child-to-child messages, planner handoffs, extension-level automatic retries, or background runs. Pi/provider retries and compaction remain host-controlled. Related continuation and short resume are initiated only by a new master tool call.
 
 Successful continuation capabilities are in-memory and scoped to the current master runtime. They expire after 30 idle minutes and only the 12 most recently available successful lineages are retained. Timeout-resume capabilities are not subject to that successful-lineage LRU. Shutdown, reload, session replacement, or master fork clears all capabilities; underlying child session files remain available for normal Pi inspection.
 
@@ -168,19 +178,21 @@ The isolated system prompt, or the final user-level fork contract, tells every c
 - include material uncertainty only;
 - omit recommendations unless explicitly requested.
 
-Workers additionally report files changed and verification within the same word budget.
+Workers additionally report files changed and verification within the same word limit.
 
 ## 8. Timeouts and cancellation
 
-Initial and successfully continued child timeout precedence is explicit agent value, run default, then 180 seconds. Accepted values are 30 through 1800 seconds.
+Initial and successfully continued child timeout precedence is explicit agent value, run default, then the original effort preset (standard: 180 seconds). Accepted values are 30 through 1800 seconds.
 
 Resume timeout precedence is explicit agent value, run default, then 60 seconds. A resume is rejected above 180 seconds and must still meet the 30-second minimum.
 
 A child has an execution deadline beginning when its runner starts. In an interactive UI, when about 15 seconds remain and policy headroom exists, pi-dede asks whether to add 60 seconds. The confirmation uses the remaining time as its own countdown and is dismissed without an extension when the child settles, is cancelled, or reaches the hard deadline. Approvals may recur only up to the applicable 1800-second normal or 180-second resume cap; dialogs are serialized because Pi has one active extension selector. Non-interactive runs retain the requested deadline.
 
-At `deadline − min(30s, executionBudget × 0.2)` (clamped to no earlier than 5s after start) the master sends a `steer` instructing the child to stop exploring and finalize its bounded answer with the evidence it has. If the child reaches `agent_settled` after the steer, it is recorded as `succeeded`. Otherwise, at the deadline the master sends an RPC `abort`, waits a short grace for `agent_settled`, and then terminates the complete process tree (`SIGTERM`, then `SIGKILL` after five seconds). Only that child is marked `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
+At `deadline − min(30s, execution deadline × 0.2)` (clamped to no earlier than 5s after start) the master sends a `steer` instructing the child to stop exploring and finalize its bounded answer with the evidence it has. If the child reaches `agent_settled` after the steer, it is recorded as `succeeded`. Otherwise, at the deadline the master sends an RPC `abort`, waits a short grace for `agent_settled`, and then terminates the complete process tree (`SIGTERM`, then `SIGKILL` after a one-second grace). Only that child is marked `timed_out`. The result receives a `resumeHandle`, and the same persistent session becomes available for one claimed continuation. Another timeout re-enables the same handle with an incremented attempt. Success or a terminal non-timeout failure consumes the handle but preserves the child session for inspection. Handles are claimed atomically, cannot run concurrently, and expire on master session shutdown, reload, replacement, or fork.
 
-Parent abort, session replacement, reload, or shutdown cancels queued work, sends an RPC `abort` to each running child, and terminates every process tree. Graceful termination is followed by forced termination after five seconds.
+Parent abort, session replacement, reload, or shutdown cancels queued work, sends an RPC `abort` to each running child, and terminates every process tree. Graceful termination is followed by forced termination after a one-second grace and another one-second confirmation window. Unconfirmed process-group cleanup quarantines the runtime and prevents new launches. Queue, setup, and disposal can add time beyond the execution deadline.
+
+Abort clears queued steering before sending the abort command; both controls are written before closing stdin. Pending prompts and steering are discarded after abort, so a finalize warning cannot restart cancelled work.
 
 ## 9. JSON collection and progress
 
@@ -203,6 +215,7 @@ interface ChildResult {
   profile: Profile;
   goal: string;
   status: "queued" | "running" | "succeeded" | "failed" | "timed_out" | "cancelled";
+  evidenceStatus?: "answered" | "partial" | "blocked" | "unreported";
   model: string;
   thinking: Thinking;
   tools: BuiltinTool[];
@@ -239,13 +252,17 @@ Limits:
 | Structured `finalText` | 32 KiB | — |
 | stderr tail | 64 KiB | — |
 
+Evidence completeness is parsed only from an opening `## Status` and exact status line. It remains a child-authored claim, separate from execution success. Missing or malformed status is `unreported`. Model-visible handoffs expose evidence status, model, turns, elapsed time, and reported cost.
+
+Each section receives a byte/line allocation before answer text is added. Recovery metadata cannot be removed by a final aggregate head truncation. Retrieval paths are never cut into invalid partial paths; overlong paths use a persistent-session fallback. Artifacts alone do not imply displayed-answer truncation.
+
 Larger final text is stored in a mode-`0600` session artifact removed at session shutdown. Truncation preserves UTF-8 boundaries and is disclosed. Nested model usage is returned through the custom tool's `usage` field.
 
 ## 11. TUI contract
 
 The call view shows the master-owned objective, mode, count, profile, tool preset, timeout, and bounded goal preview. Successful reuse calls are labeled `related continuation`; timeout recovery calls are labeled `short resume`. About 15 seconds before an eligible child's deadline, an interactive confirmation asks to extend it by 60 seconds and automatically dismisses at the child's terminal deadline. While running, the header separates done, running, and queued counts and shows aggregate elapsed time plus `Esc to cancel`; each child row shows a status-specific icon, profile, resume state, model, thinking, elapsed/deadline, and latest bounded activity. Timed-out and cancelled states are visually distinct from failures. Timed-out expanded results display the handle and 30–180 second policy. Answer deltas are never rendered.
 
-Collapsed final output shows aggregate outcome/usage, one compact answer preview, the inspectable session ID, and usage/duration per child. Expanded output shows aggregate totals, assignment, budget, session ID with the `pi --session <id>` command, the latest bounded activity with omitted-event disclosure, errors, Markdown result, artifact path, and usage.
+Collapsed final output shows aggregate outcome/usage, one compact answer preview, the inspectable session ID, and usage/duration per child. Expanded output shows aggregate totals, assignment, execution details, session ID with the `pi --session <id>` command, the latest bounded activity with omitted-event disclosure, errors, Markdown result, artifact path, and usage.
 
 UI methods are optional; execution works in TUI, RPC, JSON, and print modes.
 
@@ -276,5 +293,5 @@ Evaluate only after the current bounded behavior is measured:
 
 1. in-process SDK children for provider compatibility and lower startup cost;
 2. background execution if synchronous cache expiry remains material under the 180-second default;
-3. hard turn/tool-call budgets if prompt and deadline budgets do not sufficiently bound work;
+3. provider-level preflight cost reservations and nested-extension usage accounting;
 4. sandbox and path policies.

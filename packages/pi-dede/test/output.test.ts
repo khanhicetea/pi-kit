@@ -32,6 +32,40 @@ function details(results: DedeChildResult[]): DedeToolDetails {
 }
 
 describe("output", () => {
+  it("shows evidence status separately and does not call artifact-backed short answers truncated", () => {
+    const result = child("a", "succeeded", "## Status\npartial\n## Answer\n- Missing one caller.");
+    result.artifactPath = "/tmp/full.md";
+    const text = formatModelContent(details([result]));
+    expect(deriveStatus([result])).toBe("succeeded");
+    expect(text).toContain("Evidence (child-reported): partial");
+    expect(text).toContain("Model: test/model");
+    expect(text).toContain("cost: $0.0000");
+    expect(text).not.toContain("truncated");
+  });
+
+  it("bounds worst-case legal metadata and each child line count without truncating paths", () => {
+    const results = ["one", "two", "three"].map((id) => ({
+      ...child(id, "failed", "x\n".repeat(500)),
+      model: "m".repeat(1000), sessionId: "s".repeat(128),
+      continuationHandle: "c".repeat(128), resumeHandle: "r".repeat(128),
+      artifactPath: "/" + "a".repeat(767), sessionPath: "/sessions/" + id,
+      errorMessage: "e".repeat(8000), contextFallbackReason: "f".repeat(8000),
+    }));
+    const text = formatModelContent(details(results));
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(MODEL_CONTENT_MAX_BYTES);
+    for (const section of text.slice(text.indexOf("## ")).split("\n\n---\n\n")) {
+      expect(section.split("\n").length).toBeLessThanOrEqual(160);
+      expect(Buffer.byteLength(section)).toBeLessThanOrEqual(CHILD_MODEL_MAX_BYTES);
+    }
+    for (const result of results) {
+      expect(text).toContain(result.continuationHandle);
+      expect(text).toContain(result.resumeHandle);
+      expect(text).toContain(result.artifactPath);
+    }
+    results[0].artifactPath += "too-long";
+    expect(formatModelContent(details([results[0]]))).toContain(results[0].sessionPath);
+    expect(formatModelContent(details([results[0]]))).not.toContain("Full answer: read");
+  });
   it("derives aggregate statuses", () => {
     expect(deriveStatus([child("a", "succeeded")])).toBe("succeeded");
     expect(deriveStatus([child("a", "failed")])).toBe("failed");

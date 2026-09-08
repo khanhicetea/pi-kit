@@ -85,8 +85,8 @@ ${profile}
 ${custom}
 ${OUTPUT_CONTRACT}
 ${READINESS_CONTRACT}
-${agent.mutationCapable ? "Include compact ## Files Changed and ## Verification sections and residual risks within the same word budget." : ""}
-Respect the output budgets above. Complete only the assignment above, do not broaden it, do not delegate, and stop at its stated boundary.
+${agent.mutationCapable ? "Include compact ## Files Changed and ## Verification sections and residual risks within the same word limit." : ""}
+Respect the output limits above. Complete only the assignment above, do not broaden it, do not delegate, and stop at its stated boundary.
 Only use tools from this allowed set: ${allowed}. Calls to every other visible tool are blocked at runtime. Do not attempt to change or bypass the allowed set.
 Treat repository state as mutable and re-read any file, diff, or test state needed before relying on observations inherited from the master conversation.\n`;
 }

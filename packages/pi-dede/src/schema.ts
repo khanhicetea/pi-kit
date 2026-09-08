@@ -11,12 +11,14 @@ import {
 import {
   BUILTIN_TOOLS,
   CONTEXT_MODES,
+  EFFORT_LEVELS,
   PROFILES,
   THINKING_LEVELS,
   TOOL_PRESETS,
   type BuiltinTool,
   type DedeDelegateParams,
   type DedeProfile,
+  type EffortLevel,
   type ModelLike,
   type ResolvedAgent,
   type ThinkingLevel,
@@ -31,18 +33,28 @@ export const MAX_CHILD_TIMEOUT_SECONDS = 1800;
 export const MAX_RESUME_TIMEOUT_SECONDS = 180;
 export const MAX_AGENTS_PER_RUN = 3;
 
+/** Deterministic presets: no routing call, retry, escalation, or provider guessing. */
+export const EFFORT_DEFAULTS: Record<EffortLevel, { timeoutSeconds: number; thinking?: ThinkingLevel }> = {
+  quick: { timeoutSeconds: 120, thinking: "low" },
+  standard: { timeoutSeconds: 180 },
+  deep: { timeoutSeconds: 300, thinking: "high" },
+};
+
 const AgentSchema = Type.Object(
   {
     id: Type.String({ minLength: 1, maxLength: 32, pattern: "^[a-z][a-z0-9-]{0,31}$" }),
     profile: Type.Optional(StringEnum(PROFILES, {
       description: "Built-in specialty: scout (code mapping), reviewer (correctness), debugger (root cause), security (trust boundaries), tester (tests), documenter (docs), worker (implementation), or custom.",
     })),
+    effort: Type.Optional(StringEnum(EFFORT_LEVELS, {
+      description: "New-child preset: quick = isolated/profile model, low thinking, 120s; standard = existing defaults; deep = high thinking, 300s. Explicit fields override presets. Fixed on continue/resume.",
+    })),
     goal: Type.String({
       minLength: 1,
       description: "One bounded question or deliverable. For a continuation, give one related new task; for a resume, state only what remains.",
     }),
     contextMode: Type.Optional(StringEnum(CONTEXT_MODES, {
-      description: "How a new child gets conversation context: auto (default) lets pi-dede reuse a safe master prefix when cache-compatible, fork requires it, and isolated starts clean. Forbidden on continue/resume.",
+      description: "New-child context: auto reuses a safe master prefix when compatible, fork requires it, isolated starts clean. Default auto, except quick defaults isolated. Forbidden on continue/resume.",
     })),
     continueFrom: Type.Optional(Type.String({
       minLength: 1,
@@ -66,7 +78,7 @@ const AgentSchema = Type.Object(
     })),
     model: Type.Optional(Type.String({
       minLength: 1,
-      description: "Auto/fork: omission retains the master's model, even when auto falls back to isolation. Explicit isolated: omission uses profiles.<profile>.model then the master model. Set a model only for an intentional override; use isolated for deliberate cheaper-profile routing.",
+      description: "Auto/fork retain the master model on omission, even when auto falls back to isolation. Explicit isolated and quick's default use profiles.<profile>.model then master. Configure a cheaper profile model or explicitly select one; quick does not guess a cheap provider.",
     })),
     thinking: Type.Optional(StringEnum(THINKING_LEVELS)),
     env: Type.Optional(Type.Record(
@@ -99,7 +111,7 @@ export const DedeDelegateSchema = Type.Object(
     timeoutSeconds: Type.Optional(Type.Integer({
       minimum: MIN_CHILD_TIMEOUT_SECONDS,
       maximum: MAX_CHILD_TIMEOUT_SECONDS,
-      description: `Run default in seconds; defaults to ${DEFAULT_CHILD_TIMEOUT_SECONDS}.`,
+      description: `Run timeout override in seconds. Otherwise each child uses its effort preset (standard: ${DEFAULT_CHILD_TIMEOUT_SECONDS}s).`,
     })),
   },
   { additionalProperties: false },
@@ -262,7 +274,9 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
   const extensionProviders = new Set(context.extensionProviderIds ?? []);
   const resolved = input.agents.map((agent, index): ResolvedAgent => {
     const label = `agents[${index}]`;
-    assertByteLimit(`${label}.goal`, agent.goal, 4 * 1024);
+    if (agent.effort !== undefined && !(EFFORT_LEVELS as readonly string[]).includes(agent.effort)) {
+      throw new Error(`${label}.effort must be quick, standard, or deep`);
+    }
     assertByteLimit(`${label}.systemPrompt`, agent.systemPrompt, 8 * 1024);
     if (agent.timeoutSeconds !== undefined && (
       !Number.isInteger(agent.timeoutSeconds) ||
@@ -275,7 +289,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     if (agent.resume !== undefined || agent.continueFrom !== undefined) {
       const mode = agent.resume !== undefined ? "resume" : "continue";
       const handle = agent.resume ?? agent.continueFrom!;
-      const unsupported = ["profile", "contextMode", "systemPrompt", "toolPreset", "tools", "model", "thinking", "env"]
+      const unsupported = ["profile", "effort", "contextMode", "systemPrompt", "toolPreset", "tools", "model", "thinking", "env"]
         .filter((key) => agent[key as keyof typeof agent] !== undefined);
       if (unsupported.length > 0) {
         throw new Error(`${label} cannot override ${unsupported.join(", ")} when ${mode === "resume" ? "resuming" : "continuing"}; the old child keeps its profile, system instructions, model, thinking, environment overrides, and tools`);
@@ -287,7 +301,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
         throw new Error(`${mode === "resume" ? "Resume" : "Continuation"} handle is unavailable, expired, or already in use: ${handle}`);
       }
       const timeoutSeconds = agent.timeoutSeconds ?? input.timeoutSeconds
-        ?? (mode === "resume" ? DEFAULT_RESUME_TIMEOUT_SECONDS : DEFAULT_CHILD_TIMEOUT_SECONDS);
+        ?? (mode === "resume" ? DEFAULT_RESUME_TIMEOUT_SECONDS : EFFORT_DEFAULTS[source.agent.effort ?? "standard"].timeoutSeconds);
       if (mode === "resume" && timeoutSeconds > MAX_RESUME_TIMEOUT_SECONDS) {
         throw new Error(`Resumed children are short extensions and timeoutSeconds must not exceed ${MAX_RESUME_TIMEOUT_SECONDS}`);
       }
@@ -315,6 +329,8 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     }
 
     const profile = agent.profile ?? "custom";
+    const effort = EFFORT_DEFAULTS[agent.effort ?? "standard"];
+    const contextMode = agent.contextMode ?? (agent.effort === "quick" ? "isolated" : "auto");
     // Providing an explicit `tools` list selects the custom preset directly; no
     // separate toolPreset is required. Omitting `tools` uses the named preset.
     const toolPreset: ToolPreset = agent.tools !== undefined
@@ -341,7 +357,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
     // Auto/fork are cache-first: unless the caller explicitly selects a model,
     // retain the master's exact model. Profile model defaults apply to an
     // explicitly isolated child, where cache-prefix fidelity is not expected.
-    const modelPattern = agent.model ?? (agent.contextMode === "isolated" ? profileDefaults?.model : undefined);
+    const modelPattern = agent.model ?? (contextMode === "isolated" ? profileDefaults?.model : undefined);
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
     if (providerArg && providerArg !== model.provider) throw new Error(`additionalArgs --provider conflicts with resolved model ${model.provider}/${model.id}`);
@@ -361,16 +377,17 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
       id: agent.id,
       profile,
       goal: agent.goal,
-      contextMode: agent.contextMode ?? "auto",
+      contextMode,
+      ...(agent.effort ? { effort: agent.effort } : {}),
       resolvedContextMode: "isolated",
       systemPrompt: agent.systemPrompt,
       toolPreset,
       tools,
       additionalArgs: [...additionalArgs],
       model: `${model.provider}/${model.id}`,
-      thinking: agent.thinking ?? profileDefaults?.thinking ?? PROFILE_DEFAULT_THINKING[profile],
+      thinking: agent.thinking ?? profileDefaults?.thinking ?? effort.thinking ?? PROFILE_DEFAULT_THINKING[profile],
       env,
-      timeoutSeconds: agent.timeoutSeconds ?? input.timeoutSeconds ?? DEFAULT_CHILD_TIMEOUT_SECONDS,
+      timeoutSeconds: agent.timeoutSeconds ?? input.timeoutSeconds ?? effort.timeoutSeconds,
       mutationCapable: tools.some((tool) => MUTATION_TOOLS.has(tool)),
     };
   });

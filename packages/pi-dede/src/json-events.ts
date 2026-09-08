@@ -237,7 +237,9 @@ export class PiJsonCollector {
           this.state.turns++;
           sumUsage(this.state.usage, message.usage);
         }
-        this.state.finalText = textFromAssistant(message);
+        const text = textFromAssistant(message);
+        // An empty abort/error must not erase the evidence from the last completed response.
+        if (text || (message.stopReason !== "aborted" && message.stopReason !== "error")) this.state.finalText = text;
         this.state.model = message.model ? `${message.provider ? `${message.provider}/` : ""}${message.model}` : this.state.model;
         if (typeof message.stopReason === "string") this.state.stopReason = message.stopReason;
         if (typeof message.errorMessage === "string") this.state.errorMessage = message.errorMessage;
