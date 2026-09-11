@@ -44,8 +44,14 @@ export function createBatchMarkerComponent(value: unknown, expanded: boolean, th
 	const tools = Array.isArray(data.tools)
 		? data.tools.filter((tool): tool is string => typeof tool === "string").slice(0, 12).map(displayText)
 		: [];
+	const groupedTools: Array<{ name: string; count: number }> = [];
+	for (const tool of tools) {
+		const previous = groupedTools[groupedTools.length - 1];
+		if (previous?.name === tool) previous.count += 1;
+		else groupedTools.push({ name: tool, count: 1 });
+	}
 	const count = tools.length;
-	const summary = `${theme.fg("accent", theme.bold(`▣ Batch ×${count}`))}${theme.fg("muted", "  sibling tool calls  ")}${tools.join(theme.fg("borderMuted", " · "))}`;
+	const summary = `${theme.fg("accent", theme.bold(`▣ Batch ×${count}`))}${theme.fg("muted", "  sibling tool calls  ")}${groupedTools.map(({ name, count }) => count > 1 ? `${name} ×${count}` : name).join(theme.fg("borderMuted", " · "))}`;
 	const box = new Box(1, 0, text => theme.bg("customMessageBg", text));
 	box.addChild({
 		render: width => wrapTextWithAnsi(summary, Math.max(1, width)),

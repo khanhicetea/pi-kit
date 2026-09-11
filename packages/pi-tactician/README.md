@@ -29,7 +29,7 @@ It deliberately registers **no model-callable tool**. A wrapper tool would add s
 
 ## Batch markers
 
-In Pi's TUI, every assistant request containing two or more tool calls gets a compact, themed transcript marker such as `▣ Batch ×3 · read · ffgrep · read`. It sits with that request's tool activity, making concurrent sibling calls easy to scan; expand it for a short concurrency note. Markers are TUI-only session entries and are never sent to the model.
+In Pi's TUI, every assistant request containing two or more tool calls gets a compact, themed transcript marker such as `▣ Batch ×7 · read ×3 · edit ×2 · find · edit`. Consecutive sibling calls with the same tool are grouped. It sits with that request's tool activity, making concurrent sibling calls easy to scan; expand it for a short concurrency note. Markers are TUI-only session entries and are never sent to the model.
 
 
 ## Install

@@ -91,11 +91,13 @@ describe("Tactician report UI", () => {
 		expect(tones).not.toContain("warning");
 	});
 
-	it("renders a compact transcript marker for sibling tool calls", () => {
-		const compact = createBatchMarkerComponent({ schemaVersion: 1, tools: ["read", "ffgrep", "read"] }, false, theme).render(100).join("\n");
-		const expanded = createBatchMarkerComponent({ schemaVersion: 1, tools: ["read", "ffgrep", "read"] }, true, theme).render(100).join("\n");
-		expect(compact).toContain("Batch ×3");
+	it("groups consecutive sibling tool calls in the compact marker", () => {
+		const tools = ["read", "read", "read", "edit", "edit", "find", "edit"];
+		const compact = createBatchMarkerComponent({ schemaVersion: 1, tools }, false, theme).render(100).join("\n");
+		const expanded = createBatchMarkerComponent({ schemaVersion: 1, tools }, true, theme).render(100).join("\n");
+		expect(compact).toContain("Batch ×7");
 		expect(compact).toContain("sibling tool calls");
+		expect(compact).toContain("read ×3 · edit ×2 · find · edit");
 		expect(expanded).toContain("may execute concurrently");
 	});
 });
