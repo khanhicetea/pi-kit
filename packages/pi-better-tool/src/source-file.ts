@@ -5,7 +5,7 @@ import { MAX_SOURCE_BYTES } from "./symbols.ts";
 import { normalizeToLF, splitBom } from "./text.ts";
 
 /** Bounded local source read; no silent decoding loss and no special files. */
-export async function readSource(path: string, signal?: AbortSignal): Promise<string> {
+export async function readSource(path: string, signal?: AbortSignal, toolName = "read_symbol"): Promise<string> {
 	signal?.throwIfAborted();
 	const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
 	try {
@@ -21,7 +21,7 @@ export async function readSource(path: string, signal?: AbortSignal): Promise<st
 			length += bytesRead;
 		}
 		const after = await handle.stat();
-		if (length !== stat.size || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs) throw new Error("The source changed during the read; retry read_symbol.");
+		if (length !== stat.size || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs) throw new Error(`The source changed during the read; retry ${toolName}.`);
 		const bytes = buffer.subarray(0, length);
 		let content: string;
 		try { content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes); }
@@ -35,7 +35,7 @@ export async function readSource(path: string, signal?: AbortSignal): Promise<st
 }
 
 /** Only inspect a bounded number of siblings; never perform a hidden repo scan. */
-export async function sourceReadError(path: string, error: unknown): Promise<string> {
+export async function sourceReadError(path: string, error: unknown, toolName = "read_symbol"): Promise<string> {
 	const code = (error as NodeJS.ErrnoException)?.code;
 	const message = error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000);
 	const lines = [`Could not read source ${JSON.stringify(path)}: ${message}`];
@@ -52,9 +52,11 @@ export async function sourceReadError(path: string, error: unknown): Promise<str
 		const stem = basename(path).split(".")[0].toLowerCase();
 		names.sort((a, b) => Number(b.toLowerCase().includes(stem)) - Number(a.toLowerCase().includes(stem)) || a.localeCompare(b));
 		if (names.length) lines.push("Nearby file candidates (bounded listing, not automatic path corrections):", ...names.slice(0, 8).map((name) => `  ${JSON.stringify(join(dirname(path), name))}`));
-		lines.push("Verify the path and retry read_symbol; use find/ls if the parent path is wrong.");
+		lines.push(`Verify the path and retry ${toolName}; use find/ls if the parent path is wrong.`);
 	} else if (code === "EACCES" || code === "EPERM") {
 		lines.push("Check file permissions. Do not retry the same call until access changes.");
-	} else lines.push("Use read for ordinary text, images, or bounded line ranges; no symbol boundaries were returned.");
+	} else lines.push(toolName === "read_symbol"
+		? "Use read for ordinary text, images, or bounded line ranges; no symbol boundaries were returned."
+		: "Use read for ordinary text, images, or bounded line ranges; no import lines were returned.");
 	return lines.join("\n");
 }

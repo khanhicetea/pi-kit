@@ -3,7 +3,8 @@
 Context-aware tools for the [Pi coding agent](https://github.com/earendil-works/pi-mono):
 
 - **`edit`** replaces the built-in edit tool. Failures explain what failed, what was not written, and what to do next.
-- **`read_symbol`** is a new tool. Read a whole function, method, class, or type by containing line or exact name. With only a path, get a symbol outline.
+- **`read_symbol`** reads a whole function, method, class, or type by containing line or exact name. With only a path, it gets a symbol outline.
+- **`read_code_imports`** reads the first dependency import zone as exact raw source lines, including comments and blank lines between adjacent imports.
 - **`read` stays unchanged** for ordinary text, images, and explicit line ranges.
 
 ## Install
@@ -94,6 +95,18 @@ Limits:
 - Invalid UTF-8, NUL-containing input, and non-regular files are rejected.
 
 Parser packages are runtime dependencies. Common platforms use prebuilt native binaries. If a grammar is unavailable on a platform, the tool gives read guidance; it never runs repository code, installs a compiler, or builds a grammar during a tool call. The edit tool can still work without loading symbol parsers.
+
+## Read imports before editing them
+
+Call `read_code_imports` with a source path:
+
+```json
+{"path":"src/server.ts"}
+```
+
+The tool uses bounded regular-expression detection and returns the first contiguous import zone in an unnumbered source fence. It supports JavaScript/TypeScript, Python, Go, Rust, C/C++, C#, Java, Kotlin, PHP, Ruby, Swift, and shell files. It recognizes each language's common `import`, `include`, `use`, `require`, or `source` form, including common multiline forms.
+
+The result includes the exact file-line range and a SHA-256 snapshot. Comments and blank lines between adjacent imports remain in the raw output. The zone stops when code separates later import statements. The tool does not resolve dependencies, execute code, or claim syntax-level accuracy. Use `read` when conditional imports, generated files, uncommon macros, or unsupported syntax need more context.
 
 ## Recover from an edit failure in the next call
 

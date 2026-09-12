@@ -1,7 +1,7 @@
 {
 	"name": "@khanhicetea/pi-better-tool",
-	"version": "0.2.3",
-	"description": "Context-aware tools for pi: safe edit recovery and syntax-aware read_symbol for whole functions, methods, and classes by line or name",
+	"version": "0.2.4",
+	"description": "Context-aware tools for pi: safe edits, syntax-aware symbol reads, and raw source import-zone reads",
 	"type": "module",
 	"license": "MIT",
 	"repository": {
@@ -19,6 +19,7 @@
 		"edit",
 		"read",
 		"symbols",
+		"imports",
 		"tree-sitter",
 		"tools"
 	],

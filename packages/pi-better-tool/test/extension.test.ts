@@ -15,7 +15,7 @@ describe("extension registration", () => {
 	it("registers an edit tool override with the built-in-compatible shape", () => {
 		const { api, tools } = mockPi();
 		extension(api);
-		expect(tools.map((tool) => tool.name)).toEqual(["edit", "read_symbol"]);
+		expect(tools.map((tool) => tool.name)).toEqual(["edit", "read_symbol", "read_code_imports"]);
 		const tool = tools[0];
 		expect(tool.name).toBe("edit");
 		expect(tool.label).toBe("edit");
@@ -42,6 +42,14 @@ describe("extension registration", () => {
 		expect((symbolTool.promptGuidelines as string[]).every((guideline) => guideline.includes("read_symbol"))).toBe(true);
 		expect(symbolTool.parameters).toBeDefined();
 		expect(typeof symbolTool.execute).toBe("function");
+		const importsTool = tools[2];
+		expect(importsTool.description).toContain("raw lines");
+		const importGuidelines = importsTool.promptGuidelines as string[];
+		expect(importGuidelines.every((guideline) => guideline.includes("read_code_imports"))).toBe(true);
+		expect(importGuidelines.join(" ")).toContain("not sure whether the required import already exists");
+		expect(importGuidelines.join(" ")).toContain("batch read_code_imports with that independent code read");
+		expect(importsTool.parameters).toBeDefined();
+		expect(typeof importsTool.execute).toBe("function");
 		expect(tools.some((tool) => tool.name === "read")).toBe(false);
 	});
 });
