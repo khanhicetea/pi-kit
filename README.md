@@ -9,6 +9,7 @@ A monorepo containing reusable [Pi](https://pi.dev) extension packages.
 - [`pi-wui`](./packages/pi-wui) — browser-based Web UI portal and MCP server
 - [`pi-better-tool`](./packages/pi-better-tool) — safe `edit` recovery context and `read_symbol` for whole functions, methods, and classes by line or name
 - [`pi-tactician`](./packages/pi-tactician) — guides models to batch independent work into fewer, context-efficient inference rounds and reports missed batching opportunities
+- [`pi-sevo`](./packages/pi-sevo) — turns project session history into deterministic, bounded evidence for human-reviewed agent improvements
 - [`web-access-kit`](./packages/web-access-kit) — webpage reading and Google Search tools
 
 Each directory under `packages/` is an independently installable Pi package with its own `package.json` and Pi resource manifest.
@@ -36,6 +37,7 @@ pi -e ./packages/pi-dede
 pi -e ./packages/pi-wui
 pi -e ./packages/pi-better-tool
 pi -e ./packages/pi-tactician
+pi -e ./packages/pi-sevo
 pi -e ./packages/web-access-kit
 ```
 

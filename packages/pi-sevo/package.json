@@ -1,0 +1,46 @@
+{
+  "name": "@khanhicetea/pi-sevo",
+  "version": "0.1.0",
+  "description": "Learn from Pi project session history with deterministic enrichment and bounded evidence reviews",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khanhicetea/pi-kit.git",
+    "directory": "packages/pi-sevo"
+  },
+  "homepage": "https://github.com/khanhicetea/pi-kit/tree/main/packages/pi-sevo",
+  "bugs": {
+    "url": "https://github.com/khanhicetea/pi-kit/issues"
+  },
+  "keywords": ["pi-package", "pi-extension", "session-analysis", "prompt-engineering", "self-improvement"],
+  "files": ["src", "README.md", "SPEC.md", "LICENSE"],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@earendil-works/pi-tui": "0.82.1",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
