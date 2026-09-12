@@ -187,8 +187,8 @@ export interface RunChildOptions {
   maximumTimeoutSeconds?: number;
   /** Seconds added for each approved extension. Defaults to 60 seconds. */
   timeoutExtensionSeconds?: number;
-  /** Called near the deadline without blocking child execution. Its signal closes the dialog when the child ends. */
-  onTimeoutExtensionRequest?: (request: TimeoutExtensionRequest) => Promise<boolean>;
+  /** Called near the deadline without blocking child execution. Its signal closes the dialog when the child ends. Return "maximum" to extend to the policy cap. */
+  onTimeoutExtensionRequest?: (request: TimeoutExtensionRequest) => Promise<boolean | "maximum">;
   /** Reports the effective deadline after the user approves an extension. */
   onTimeoutExtended?: (timeoutSeconds: number) => void;
   signal?: AbortSignal;
@@ -201,6 +201,7 @@ export interface RunChildOptions {
 export interface TimeoutExtensionRequest {
   currentTimeoutSeconds: number;
   extensionSeconds: number;
+  maximumTimeoutSeconds: number;
   remainingMs: number;
   /** Aborted when this child settles, is cancelled, or reaches its hard deadline. */
   signal: AbortSignal;
@@ -327,11 +328,12 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     if (finishedFlag || extensionSeconds <= 0 || !options.onTimeoutExtensionRequest) return;
     const controller = new AbortController();
     timeoutExtensionPromptController = controller;
-    let approved = false;
+    let decision: boolean | "maximum" = false;
     try {
-      approved = await options.onTimeoutExtensionRequest({
+      decision = await options.onTimeoutExtensionRequest({
         currentTimeoutSeconds: effectiveTimeoutSeconds,
         extensionSeconds,
+        maximumTimeoutSeconds,
         remainingMs: Math.max(0, deadline - Date.now()),
         signal: controller.signal,
       });
@@ -340,16 +342,19 @@ export async function runChild(options: RunChildOptions): Promise<{ result: Dede
     } finally {
       if (timeoutExtensionPromptController === controller) timeoutExtensionPromptController = undefined;
     }
-    if (!approved || controller.signal.aborted || finishedFlag || Date.now() >= deadline) return;
+    const selectedExtensionSeconds = decision === "maximum"
+      ? maximumTimeoutSeconds - effectiveTimeoutSeconds
+      : extensionSeconds;
+    if (!decision || selectedExtensionSeconds <= 0 || controller.signal.aborted || finishedFlag || Date.now() >= deadline) return;
 
     const supersededWarning = warned;
-    effectiveTimeoutSeconds += extensionSeconds;
-    deadline += extensionSeconds * 1000;
+    effectiveTimeoutSeconds += selectedExtensionSeconds;
+    deadline += selectedExtensionSeconds * 1000;
     warned = false;
     try { options.onTimeoutExtended?.(effectiveTimeoutSeconds); }
     catch (error) { stderr = tailUtf8(stderr, `\nTimeout extension observer failed: ${String(error)}`, STDERR_CAP); }
     if (supersededWarning) {
-      child.steer(`The user approved an additional ${extensionSeconds}s for this delegation. The earlier deadline warning is superseded; continue the bounded task and finalize before the new deadline.`);
+      child.steer(`The user approved an additional ${selectedExtensionSeconds}s for this delegation. The earlier deadline warning is superseded; continue the bounded task and finalize before the new deadline.`);
     }
     scheduleSoftWarning();
     scheduleDeadline();

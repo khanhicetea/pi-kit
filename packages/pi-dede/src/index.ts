@@ -18,12 +18,15 @@ import type { DedeChildResult, DedeToolDetails, DetailedUsage, ResolvedAgent } f
 const PROGRESS_THROTTLE_MS = 200;
 const PROGRESS_HEARTBEAT_MS = 1000;
 
+type TimeoutExtensionChoice = boolean | "maximum";
+
 interface TimeoutExtensionDialog {
   agentId: string;
   extensionSeconds: number;
+  maximumTimeoutSeconds: number;
   expiresAt: number;
   signal: AbortSignal;
-  settle(value: boolean): void;
+  settle(value: TimeoutExtensionChoice): void;
 }
 
 /** Serializes extension dialogs because Pi has one active extension selector at a time. */
@@ -33,12 +36,18 @@ class TimeoutExtensionDialogQueue {
 
   constructor(private readonly ctx: ExtensionContext) {}
 
-  request(agentId: string, extensionSeconds: number, remainingMs: number, signal: AbortSignal): Promise<boolean> {
+  request(
+    agentId: string,
+    extensionSeconds: number,
+    maximumTimeoutSeconds: number,
+    remainingMs: number,
+    signal: AbortSignal,
+  ): Promise<TimeoutExtensionChoice> {
     if (!this.ctx.hasUI || signal.aborted) return Promise.resolve(false);
-    return new Promise<boolean>((resolve) => {
+    return new Promise<TimeoutExtensionChoice>((resolve) => {
       let settled = false;
       let request!: TimeoutExtensionDialog;
-      const settle = (value: boolean) => {
+      const settle = (value: TimeoutExtensionChoice) => {
         if (settled) return;
         settled = true;
         signal.removeEventListener("abort", onAbort);
@@ -50,6 +59,7 @@ class TimeoutExtensionDialogQueue {
       request = {
         agentId,
         extensionSeconds,
+        maximumTimeoutSeconds,
         expiresAt: Date.now() + remainingMs,
         signal,
         settle,
@@ -73,12 +83,12 @@ class TimeoutExtensionDialogQueue {
     this.showing = true;
     try {
       const remainingMs = Math.max(1, request.expiresAt - Date.now());
-      const confirmed = await this.ctx.ui.confirm(
-        "Extend subagent timeout?",
-        `${request.agentId} has about ${Math.max(1, Math.ceil(remainingMs / 1000))}s left. Extend its timeout by ${request.extensionSeconds}s?`,
+      const choice = await this.ctx.ui.select(
+        `${request.agentId} has about ${Math.max(1, Math.ceil(remainingMs / 1000))}s left. Yes adds ${request.extensionSeconds}s; Leave it run extends to ${request.maximumTimeoutSeconds}s.`,
+        ["Yes", "No", "Leave it run"],
         { signal: request.signal, timeout: remainingMs },
       );
-      request.settle(confirmed);
+      request.settle(choice === "Yes" ? true : choice === "Leave it run" ? "maximum" : false);
     } catch {
       request.settle(false);
     } finally {
@@ -367,8 +377,8 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               additionalArgs: agent.additionalArgs,
               timeoutSeconds: agent.timeoutSeconds,
               maximumTimeoutSeconds: agent.resume ? MAX_RESUME_TIMEOUT_SECONDS : MAX_CHILD_TIMEOUT_SECONDS,
-              onTimeoutExtensionRequest: agent.effort === "quick" ? undefined : ({ extensionSeconds, remainingMs, signal: dialogSignal }) =>
-                timeoutExtensionDialogs.request(agent.id, extensionSeconds, remainingMs, dialogSignal),
+              onTimeoutExtensionRequest: agent.effort === "quick" ? undefined : ({ extensionSeconds, maximumTimeoutSeconds, remainingMs, signal: dialogSignal }) =>
+                timeoutExtensionDialogs.request(agent.id, extensionSeconds, maximumTimeoutSeconds, remainingMs, dialogSignal),
               onTimeoutExtended: (timeoutSeconds) => {
                 details.results[index] = {
                   ...details.results[index],

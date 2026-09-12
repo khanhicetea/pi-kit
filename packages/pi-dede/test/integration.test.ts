@@ -771,6 +771,67 @@ describe("fake Pi integration", () => {
     }
   });
 
+  it("extends to the policy cap when the user lets a child run", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "pi-dede-timeout-extension-maximum-"));
+    const fake = join(directory, "fake-pi.mjs");
+    const system = join(directory, "system.md");
+    const task = join(directory, "task.md");
+    await writeFile(system, "system");
+    await writeFile(task, "task");
+    await writeFile(fake, `
+      ${RPC_READER}
+      function onCommand(cmd) {
+        if (cmd.type === "prompt") {
+          __send({ type: "response", command: "prompt", id: cmd.id, success: true });
+        } else if (cmd.type === "abort") {
+          __send({ type: "agent_end" });
+          __send({ type: "agent_settled" });
+        }
+      }
+    `);
+
+    process.env.PI_DEDE_EXECUTABLE = fake;
+    const manager = new ChildProcessManager();
+    const artifacts = new ArtifactManager("timeout-extension-maximum-session");
+    const requests: Array<{ currentTimeoutSeconds: number; extensionSeconds: number; maximumTimeoutSeconds: number }> = [];
+    const extensions: number[] = [];
+    try {
+      const { result } = await runChild({
+        agent: { ...agent, timeoutSeconds: 0.5 },
+        cwd: directory,
+        systemPromptPath: system,
+        taskPath: task,
+        sessionDirectory: directory,
+        sessionPath: join(directory, "timeout-extension-maximum-session.jsonl"),
+        childSessionId: "66666666-6666-4666-8666-666666666666",
+        runId: "timeout-extension-maximum-run",
+        parentSessionId: "parent",
+        timeoutSeconds: 0.5,
+        maximumTimeoutSeconds: 1,
+        timeoutExtensionSeconds: 0.25,
+        onTimeoutExtensionRequest: async (request) => {
+          requests.push({
+            currentTimeoutSeconds: request.currentTimeoutSeconds,
+            extensionSeconds: request.extensionSeconds,
+            maximumTimeoutSeconds: request.maximumTimeoutSeconds,
+          });
+          return "maximum";
+        },
+        onTimeoutExtended: (timeoutSeconds) => extensions.push(timeoutSeconds),
+        manager,
+        artifacts,
+      });
+      expect(requests).toEqual([{ currentTimeoutSeconds: 0.5, extensionSeconds: 0.25, maximumTimeoutSeconds: 1 }]);
+      expect(extensions).toEqual([1]);
+      expect(result).toMatchObject({ status: "timed_out", timeoutSeconds: 1 });
+      expect(manager.size).toBe(0);
+    } finally {
+      await artifacts.cleanup();
+      await manager.killAll();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("dismisses an unanswered timeout-extension prompt when the child times out", async () => {
     const directory = await mkdtemp(join(tmpdir(), "pi-dede-timeout-extension-dismiss-"));
     const fake = join(directory, "fake-pi.mjs");
