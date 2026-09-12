@@ -24,8 +24,12 @@ function usablePath(path: string | undefined): boolean {
 }
 
 function childMetadata(result: DedeChildResult): string {
+  const resolvedContext = result.contextModeResolved ?? "isolated";
+  const contextRoute = result.contextModeRequested && result.contextModeRequested !== resolvedContext
+    ? `${result.contextModeRequested}→${resolvedContext}`
+    : resolvedContext;
   const lines = [
-    `Evidence (child-reported): ${result.evidenceStatus ?? evidenceStatus(result.finalText)} · Context: ${result.contextModeResolved ?? "isolated"}`,
+    `Evidence (child-reported): ${result.evidenceStatus ?? evidenceStatus(result.finalText)} · Context: ${contextRoute}`,
     `Model: ${oneLine(result.model, 160)} · turns: ${result.usage.turns} · time: ${Math.round(result.durationMs)}ms · cost: $${result.usage.cost.toFixed(4)}`,
     result.sessionId && `Session: \`${oneLine(result.sessionId, 128)}\` (pi --session ${oneLine(result.sessionId, 128)})`,
     result.continuationHandle && `Related continuation available: \`${oneLine(result.continuationHandle, 128)}\` ("continueFrom": "${oneLine(result.continuationHandle, 128)}") — only if it directly benefits from this child's context; revalidate mutable state.`,

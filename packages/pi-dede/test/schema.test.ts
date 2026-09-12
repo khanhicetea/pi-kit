@@ -138,7 +138,11 @@ describe("semantic validation", () => {
     });
 
     const [cacheFirst] = validateAndResolve(valid({ agents: [{ id: "a", profile: "scout", goal: "x" }] }), defaults);
-    expect(cacheFirst).toMatchObject({ model: "test/main", contextMode: "auto" });
+    expect(cacheFirst).toMatchObject({
+      model: "test/main",
+      isolationFallbackModel: "other/small",
+      contextMode: "auto",
+    });
 
     const [shared] = validateAndResolve(valid({ agents: [{ id: "a", profile: "custom", goal: "x" }] }), defaults);
     expect(shared.additionalArgs).toEqual(["--shared-child-arg"]);

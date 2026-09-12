@@ -35,9 +35,11 @@ describe("output", () => {
   it("shows evidence status separately and does not call artifact-backed short answers truncated", () => {
     const result = child("a", "succeeded", "## Status\npartial\n## Answer\n- Missing one caller.");
     result.artifactPath = "/tmp/full.md";
+    result.contextModeRequested = "auto";
+    result.contextModeResolved = "isolated";
     const text = formatModelContent(details([result]));
     expect(deriveStatus([result])).toBe("succeeded");
-    expect(text).toContain("Evidence (child-reported): partial");
+    expect(text).toContain("Evidence (child-reported): partial · Context: auto→isolated");
     expect(text).toContain("Model: test/model");
     expect(text).toContain("cost: $0.0000");
     expect(text).not.toContain("truncated");

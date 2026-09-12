@@ -30,7 +30,7 @@ The tool schema defines argument syntax, defaults, and limits. Use these decisio
 | Let pi-dede choose a compatible, economical context | Default `auto` |
 | Clean-room evidence, minimal disclosure, or a deliberately different model | Explicit `isolated` |
 
-Omit `model` for auto/fork to retain the master model, including after auto falls back to isolation. Profile model defaults apply to isolation selected explicitly or by quick's default. A different explicit model makes auto fall back to isolation.
+Omit `model` to let context selection choose correctly: a successful auto/fork keeps the master model, while explicit isolation, quick's default, and auto fallback use the configured profile model. A different explicit model makes auto fall back to isolation.
 
 Fork requires compatible ordered tool metadata; extension/SDK tools can cause fallback or forced-fork rejection. Provider/context hooks are not fully observable. Child fork reuse, continuation reuse, and parent cache retention are separate, best-effort observations—not guarantees. Do not widen child tools merely because their definitions are visible in inherited context.
 

@@ -34,6 +34,13 @@ function outcomeBreakdown(results: readonly DedeChildResult[]): string {
     .join(" · ");
 }
 
+function contextRoute(child: DedeChildResult): string {
+  const resolved = child.contextModeResolved ?? "isolated";
+  return child.contextModeRequested && child.contextModeRequested !== resolved
+    ? `${child.contextModeRequested}→${resolved}`
+    : resolved;
+}
+
 function activityPreview(activity: readonly DedeActivity[], max = 12): string {
   const visible = activity.slice(-max);
   const omitted = activity.length - visible.length;
@@ -110,7 +117,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     for (const child of details.results) {
       const latest = child.activity.at(-1)?.text ?? child.status;
       const lineage = child.resumedFrom ? "resumed · " : child.continuedFrom ? `continued #${child.continuationIndex ?? 0} · ` : "";
-      const runtime = `${lineage}${child.profile} · ${child.model} · ${child.thinking} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s · ${child.contextModeResolved ?? "isolated"}`;
+      const runtime = `${lineage}${child.profile} · ${child.model} · ${child.thinking} · ${seconds(child.durationMs)}/${child.timeoutSeconds}s · ${contextRoute(child)}`;
       text += `\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", `· ${runtime}`)}`;
       text += `\n    ${theme.fg("dim", preview(latest, 120))}`;
     }
@@ -126,7 +133,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
       const first = child.finalText.split("\n").filter((line) => line.trim() && !line.trim().startsWith("#")).slice(0, 2).join(" ");
       const cache = child.cacheHitRatio ? ` · ${(child.cacheHitRatio * 100).toFixed(0)}% cache` : "";
       const firstEvent = child.timeToFirstEventMs !== undefined ? ` · first event ${seconds(child.timeToFirstEventMs)}` : "";
-      const stats = `${child.profile} · ${child.contextModeResolved ?? "isolated"} · ${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tok${cache}${child.usage.cost ? ` · $${child.usage.cost.toFixed(4)}` : ""}${firstEvent} · ${seconds(child.durationMs)}`;
+      const stats = `${child.profile} · ${contextRoute(child)} · ${child.usage.turns} turns · ${tokens(child.usage.totalTokens)} tok${cache}${child.usage.cost ? ` · $${child.usage.cost.toFixed(4)}` : ""}${firstEvent} · ${seconds(child.durationMs)}`;
       text += `\n\n  ${icon(child.status, theme)} ${theme.fg("accent", child.id)} ${theme.fg("muted", `· ${child.status} · ${stats}`)}`;
       text += `\n    ${theme.fg("toolOutput", preview(first || child.errorMessage || "(no output)", 100))}`;
       if (child.sessionId) text += `\n    ${theme.fg("dim", `session ${child.sessionId} · pi --session ${child.sessionId}`)}`;
@@ -151,7 +158,7 @@ export function renderDedeResult(result: any, options: any, theme: any, context:
     container.addChild(new Text(theme.fg("muted", "Execution: ") + theme.fg("dim", `${child.timeoutSeconds}s · ${child.tools.join(", ") || "no tools"}`), 0, 0));
     const contextDetail = child.contextModeResolved === "fork" && child.forkedFrom
       ? `fork · parent ${child.forkedFrom.sessionId} · entry ${child.forkedFrom.entryId}${child.forkedFrom.contextTokens !== undefined ? ` · ${tokens(child.forkedFrom.contextTokens)} inherited tokens` : ""}`
-      : `isolated${child.contextFallbackReason ? ` · ${child.contextFallbackReason}` : ""}`;
+      : `${contextRoute(child)}${child.contextFallbackReason ? ` · ${child.contextFallbackReason}` : ""}`;
     container.addChild(new Text(theme.fg("muted", "Context: ") + theme.fg("dim", contextDetail), 0, 0));
     if (child.sessionId) container.addChild(new Text(theme.fg("muted", "Session: ") + theme.fg("dim", `${child.sessionId} · inspect with pi --session ${child.sessionId}`), 0, 0));
     if (child.activity.length) container.addChild(new Text(theme.fg("dim", activityPreview(child.activity)), 0, 0));

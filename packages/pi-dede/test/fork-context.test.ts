@@ -89,9 +89,10 @@ describe("master context forking", () => {
     const snapshot = captureMasterForkSnapshot(ctx, "call-dede", ["read", "grep", "find", "ls", "write", "delegate_to_subagents"], toolSurfaceFixture(directory));
     expect(snapshot).toMatchObject({ entryId: currentUserId, contextTokens: 8000, model: "test/main" });
 
-    const resolved = resolveAgentContext(agent, snapshot, config);
+    const resolved = resolveAgentContext({ ...agent, isolationFallbackModel: "other/small" }, snapshot, config);
     expect(resolved).toMatchObject({
       resolvedContextMode: "fork",
+      model: "test/main",
       inheritedSystemPrompt: "exact master system",
       cacheAffinityKey: manager.getSessionId(),
     });
@@ -108,9 +109,9 @@ describe("master context forking", () => {
     await store.cleanup();
   });
 
-  it("falls back in auto mode but makes forced fork failures explicit", () => {
-    const unavailable = resolveAgentContext(agent, undefined, config);
-    expect(unavailable).toMatchObject({ resolvedContextMode: "isolated" });
+  it("uses the configured profile model on auto fallback but makes forced fork failures explicit", () => {
+    const unavailable = resolveAgentContext({ ...agent, isolationFallbackModel: "other/small" }, undefined, config);
+    expect(unavailable).toMatchObject({ resolvedContextMode: "isolated", model: "other/small" });
     expect(unavailable.contextFallbackReason).toContain("safe persistent fork point");
     expect(() => resolveAgentContext({ ...agent, contextMode: "fork" }, undefined, config)).toThrow(/Cannot fork child scout/);
   });

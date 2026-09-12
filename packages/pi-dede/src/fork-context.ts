@@ -92,7 +92,12 @@ export function resolveAgentContext(
   const ineligible = forkIneligibility(agent, snapshot, config);
   if (ineligible) {
     if (agent.contextMode === "fork") throw new Error(`Cannot fork child ${agent.id}: ${ineligible}`);
-    return { ...agent, resolvedContextMode: "isolated", contextFallbackReason: ineligible };
+    return {
+      ...agent,
+      resolvedContextMode: "isolated",
+      contextFallbackReason: ineligible,
+      model: agent.isolationFallbackModel ?? agent.model,
+    };
   }
   const source = snapshot!;
   return {

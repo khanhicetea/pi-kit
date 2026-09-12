@@ -21,8 +21,8 @@ afterEach(() => {
 describe("hardening contracts", () => {
   it("documents context-aware model precedence in the actual schema", () => {
     const description = Reflect.get(DedeDelegateSchema.properties.agents.items.properties.model, "description");
-    expect(description).toContain("even when auto falls back");
-    expect(description).toContain("Explicit isolated");
+    expect(description).toContain("auto fallbacks");
+    expect(description).toContain("Forked children retain the master model");
   });
 
   it("rejects unavailable and same-name overridden tool surfaces", () => {

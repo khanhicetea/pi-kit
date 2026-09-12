@@ -24,6 +24,8 @@ describe("TUI rendering", () => {
         thinking: "low",
         tools: ["read"],
         timeoutSeconds: 120,
+        contextModeRequested: "auto",
+        contextModeResolved: "isolated",
         resumedFrom: "dede_handle",
         finalText: "",
         durationMs: 1200,
@@ -34,7 +36,7 @@ describe("TUI rendering", () => {
 
     const component = renderDedeResult({ details }, { isPartial: true }, theme, {});
     const text = component.render(200).join("\n");
-    expect(text).toContain("scout · resumed · scout · test/model · low · 1.2s/120s");
+    expect(text).toContain("scout · resumed · scout · test/model · low · 1.2s/120s · auto→isolated");
     expect(text).toContain("reading src/index.ts");
     expect(text).toContain("0/1 done · 1 running");
     expect(text).toContain("Esc to cancel");

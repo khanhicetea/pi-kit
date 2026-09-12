@@ -92,6 +92,8 @@ export interface ResolvedAgent {
   tools: BuiltinTool[];
   additionalArgs: string[];
   model: string;
+  /** Configured profile model to use only if auto context falls back to isolation. */
+  isolationFallbackModel?: string;
   thinking: ThinkingLevel;
   env: Record<string, string>;
   timeoutSeconds: number;

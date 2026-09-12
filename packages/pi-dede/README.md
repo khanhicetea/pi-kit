@@ -31,7 +31,7 @@ Use direct tools for a known read or command. Delegate when a bounded multi-step
 | `standard` or omitted | auto | profile default | 180s |
 | `deep` | auto | high | 300s |
 
-Explicit context, model, thinking, and timeout fields override preset defaults. Configured profile thinking overrides the preset thinking fallback. An explicit `contextMode: "auto"` or `"fork"` keeps the main model unless `model` is explicit, even with `quick`.
+Explicit context, model, thinking, and timeout fields override preset defaults. Configured profile thinking overrides the preset thinking fallback. Forked children keep the main model for cache compatibility. Isolated children, including `auto` fallbacks, use the configured profile model unless `model` is explicit.
 
 No routing-model call, automatic model escalation, or extension-level retry is added. Pi/provider retry and compaction behavior remain host-controlled. Queue, setup, and cleanup time are additional to the execution deadline. Quick runs do not ask the user to extend their deadline.
 
@@ -102,7 +102,7 @@ Configure a cheaper model you have access to in `~/.pi/agent/pi-dede.json`, or `
 }
 ```
 
-Configuration is read on each delegation. Project fields override global profile fields; environment maps merge by name. Per-agent fields override configuration. Profile models apply to isolated children, including quick's default, not auto/fork.
+Configuration is read on each delegation. Project fields override global profile fields; environment maps merge by name. Per-agent fields override configuration. Profile models apply whenever a child runs isolated, including quick's default and `auto` fallbacks. A successful `auto`/`fork` keeps the main model.
 
 Trusted `additionalArgs` is a flag/value object, for example `{ "-e": "/absolute/provider-extension.ts", "--fast": true }`. A profile-level object replaces the shared object, including `{}`. `true` emits a flag, `false` omits it, and a non-empty string emits a flag/value pair. Any extra arguments force auto isolation because their effect on fork fidelity is unknown. Conflicting lifecycle flags are the configuration owner's responsibility.
 

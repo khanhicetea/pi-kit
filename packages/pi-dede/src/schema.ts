@@ -78,7 +78,7 @@ const AgentSchema = Type.Object(
     })),
     model: Type.Optional(Type.String({
       minLength: 1,
-      description: "Auto/fork retain the master model on omission, even when auto falls back to isolation. Explicit isolated and quick's default use profiles.<profile>.model then master. Configure a cheaper profile model or explicitly select one; quick does not guess a cheap provider.",
+      description: "Explicit model overrides profiles.<profile>.model. Forked children retain the master model; isolated children, including auto fallbacks and quick's default, use the profile model then master. Quick does not guess a cheap provider.",
     })),
     thinking: Type.Optional(StringEnum(THINKING_LEVELS)),
     env: Type.Optional(Type.Record(
@@ -354,23 +354,34 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
       : validateChildEnv(profileDefaults.env, `profiles.${profile}.env`);
     const requestEnv = agent.env === undefined ? {} : validateChildEnv(agent.env, `${label}.env`);
     const env = validateChildEnv(mergeChildEnv([configuredEnv, requestEnv]), `${label}.effectiveEnv`);
-    // Auto/fork are cache-first: unless the caller explicitly selects a model,
-    // retain the master's exact model. Profile model defaults apply to an
-    // explicitly isolated child, where cache-prefix fidelity is not expected.
+    // Auto/fork remain cache-first while a fork is possible. If auto later
+    // falls back to isolation, use the configured profile model as an isolated
+    // request would. An explicit per-agent model always wins.
     const modelPattern = agent.model ?? (contextMode === "isolated" ? profileDefaults?.model : undefined);
     const model = modelPattern ? resolveModelPattern(modelPattern, context.models) : context.model;
     if (!model) throw new Error(`Could not resolve model for agent ${agent.id}${modelPattern ? `: ${modelPattern}` : ""}`);
-    if (providerArg && providerArg !== model.provider) throw new Error(`additionalArgs --provider conflicts with resolved model ${model.provider}/${model.id}`);
-    if (
-      extensionProviders.has(model.provider) &&
-      disablesChildExtensionDiscovery(additionalArgs) &&
-      !explicitlyLoadsChildExtension(additionalArgs)
-    ) {
-      throw new Error(
-        `Model provider ${model.provider} is registered by an extension, but child extension discovery is disabled. ` +
-        `Remove "--no-extensions" or explicitly load the provider with additionalArgs: ["-e", "/absolute/path/to/extension.ts"].` +
-        compatibleModelHint(context.models, extensionProviders),
-      );
+    const isolationFallbackModel = contextMode === "auto" && agent.model === undefined && profileDefaults?.model
+      ? resolveModelPattern(profileDefaults.model, context.models)
+      : undefined;
+    const possibleModels = (parsedArgs.length > 0 && isolationFallbackModel
+      ? [isolationFallbackModel]
+      : [model, isolationFallbackModel]
+    ).filter((candidate): candidate is ModelLike => candidate !== undefined);
+    for (const possibleModel of possibleModels) {
+      if (providerArg && providerArg !== possibleModel.provider) {
+        throw new Error(`additionalArgs --provider conflicts with resolved model ${possibleModel.provider}/${possibleModel.id}`);
+      }
+      if (
+        extensionProviders.has(possibleModel.provider) &&
+        disablesChildExtensionDiscovery(additionalArgs) &&
+        !explicitlyLoadsChildExtension(additionalArgs)
+      ) {
+        throw new Error(
+          `Model provider ${possibleModel.provider} is registered by an extension, but child extension discovery is disabled. ` +
+          `Remove "--no-extensions" or explicitly load the provider with additionalArgs: ["-e", "/absolute/path/to/extension.ts"].` +
+          compatibleModelHint(context.models, extensionProviders),
+        );
+      }
     }
 
     return {
@@ -385,6 +396,7 @@ export function validateAndResolve(input: DedeDelegateParams, context: Validatio
       tools,
       additionalArgs: [...additionalArgs],
       model: `${model.provider}/${model.id}`,
+      ...(isolationFallbackModel ? { isolationFallbackModel: `${isolationFallbackModel.provider}/${isolationFallbackModel.id}` } : {}),
       thinking: agent.thinking ?? profileDefaults?.thinking ?? effort.thinking ?? PROFILE_DEFAULT_THINKING[profile],
       env,
       timeoutSeconds: agent.timeoutSeconds ?? input.timeoutSeconds ?? effort.timeoutSeconds,

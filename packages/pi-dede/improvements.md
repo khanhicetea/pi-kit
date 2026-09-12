@@ -155,7 +155,7 @@ This refinement incorporates `../pi-tactician/src/guidance.ts`. Its objective is
 
 **Starting seams:** `src/tool-definition.ts`, `skills/subagents/SKILL.md`, `skills/subagents/references/recipes.md`, `src/schema.ts`, `src/fork-context.ts`.
 
-Current model resolution is cache-first: omitted model with `auto`/`fork` retains the master's model; profile model defaults apply only to explicit isolation. Consequently, configuring a cheap scout does not make an ordinary auto scout cheap. Preserve this compatibility behavior, but teach the master to choose intentionally:
+Current model resolution is cache-first while a fork remains possible: omitted model with a successful `auto`/`fork` retains the master's model, while explicit isolation and `auto` fallback use the profile model. Teach the master to choose intentionally:
 
 | Work | Preferred route | Reason |
 | --- | --- | --- |
@@ -166,9 +166,9 @@ Current model resolution is cache-first: omitted model with `auto`/`fork` retain
 
 Compare **total expected cost**: delegation setup + child input/cache/output + master handoff/verification + likely repair, versus direct master work. Also compare wall-clock critical path. A cheaper model that times out, needs repeated clarification, or returns unreliable evidence can lose both comparisons. A large cached fork can still cost more than a tiny isolated prompt.
 
-Do not add a separate model-powered routing/planning call. Start with concise guidance and user-configured profile models. Use an explicit `contextMode: "isolated"` for deliberate cheap-model routing; keep auto/fork omission semantics clear. Avoid hard-coded model rankings/prices and automatic escalation. If later introducing an economy policy, make it opt-in, transparent, and distinct from context compatibility.
+Do not add a separate model-powered routing/planning call. Start with concise guidance and user-configured profile models. Use an explicit `contextMode: "isolated"` for guaranteed clean-room routing; keep auto/fork omission semantics clear. Avoid hard-coded model rankings/prices and automatic escalation. If later introducing an economy policy, make it opt-in, transparent, and distinct from context compatibility.
 
-**Acceptance:** Guidance examples show all three routes and distinguish a trivial command from a small reasoning task. Model-resolution tests retain current semantics. Task scenarios reject delegation for a single lookup but allow an inexpensive child for bounded multi-step checking.
+**Acceptance:** Guidance examples show all three routes and distinguish a trivial command from a small reasoning task. Model-resolution tests cover successful forks and auto fallback. Task scenarios reject delegation for a single lookup but allow an inexpensive child for bounded multi-step checking.
 
 ### 15. Make the short path actually short, without promising cache warmth
 

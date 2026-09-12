@@ -1,6 +1,6 @@
 {
   "name": "@khanhicetea/pi-dede",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Delegate focused work to context-aware Pi sub-agents",
   "type": "module",
   "license": "MIT",
