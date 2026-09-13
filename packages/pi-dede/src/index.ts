@@ -377,7 +377,7 @@ export default function dedeExtension(pi: ExtensionAPI): void {
               additionalArgs: agent.additionalArgs,
               timeoutSeconds: agent.timeoutSeconds,
               maximumTimeoutSeconds: agent.resume ? MAX_RESUME_TIMEOUT_SECONDS : MAX_CHILD_TIMEOUT_SECONDS,
-              onTimeoutExtensionRequest: agent.effort === "quick" ? undefined : ({ extensionSeconds, maximumTimeoutSeconds, remainingMs, signal: dialogSignal }) =>
+              onTimeoutExtensionRequest: ({ extensionSeconds, maximumTimeoutSeconds, remainingMs, signal: dialogSignal }) =>
                 timeoutExtensionDialogs.request(agent.id, extensionSeconds, maximumTimeoutSeconds, remainingMs, dialogSignal),
               onTimeoutExtended: (timeoutSeconds) => {
                 details.results[index] = {

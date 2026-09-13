@@ -33,7 +33,7 @@ Use direct tools for a known read or command. Delegate when a bounded multi-step
 
 Explicit context, model, thinking, and timeout fields override preset defaults. Configured profile thinking overrides the preset thinking fallback. Forked children keep the main model for cache compatibility. Isolated children, including `auto` fallbacks, use the configured profile model unless `model` is explicit.
 
-No routing-model call, automatic model escalation, or extension-level retry is added. Pi/provider retry and compaction behavior remain host-controlled. Queue, setup, and cleanup time are additional to the execution deadline. Quick runs do not ask the user to extend their deadline.
+No routing-model call, automatic model escalation, or extension-level retry is added. Pi/provider retry and compaction behavior remain host-controlled. Queue, setup, and cleanup time are additional to the execution deadline. Any run with an available UI can ask the user to extend its deadline.
 
 ## Useful handoffs, small context
 

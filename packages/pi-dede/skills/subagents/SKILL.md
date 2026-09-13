@@ -19,7 +19,7 @@ Compare total setup, child input/cache/output, handoff, verification, likely rep
 
 ## 2. Choose effort, context, and capabilities
 
-Use `quick` for a small search-and-extract task with a 120-second deadline; `standard` or omitted effort preserves existing defaults (auto context, profile thinking, 180 seconds); `deep` explicitly permits high thinking and a 300-second deadline for harder bounded work. Explicit fields override presets; configured profile thinking overrides preset thinking. Quick runs do not ask the user for more time.
+Use `quick` for a small search-and-extract task with a 120-second deadline; `standard` or omitted effort preserves existing defaults (auto context, profile thinking, 180 seconds); `deep` explicitly permits high thinking and a 300-second deadline for harder bounded work. Explicit fields override presets; configured profile thinking overrides preset thinking. Any run with an available UI can ask the user for more time.
 
 The tool schema defines argument syntax, defaults, and limits. Use these decision rules:
 
