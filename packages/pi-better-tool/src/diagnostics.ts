@@ -147,7 +147,7 @@ export function formatEditFailure(opts: FormatFailureOptions): string {
 function nextContextCall(path: string, start: number, end = start): string {
 	const read = `read ${JSON.stringify({ path, offset: Math.max(1, start - 3), limit: Math.min(1800, end - start + 7) })}`;
 	return languageForPath(path)
-		? `Next context call: read_symbol ${JSON.stringify({ path, line: start })} for the enclosing symbol; or ${read} for exact line context.`
+		? `Next context call: read_symbol ${JSON.stringify({ path, mode: "symbol", line: start })} for the enclosing symbol; or ${read} for exact line context.`
 		: `Next context call: ${read}.`;
 }
 
@@ -456,7 +456,7 @@ function formatNotFound(opts: FormatFailureOptions, oldText: string): string {
 	} else {
 		lines.push("No reliable similar region was found within the bounded diagnostic search.");
 		lines.push("If you expected this text to exist, read the file around the expected location and retry.");
-		lines.push(languageForPath(opts.path) ? `Next context call: read_symbol ${JSON.stringify({ path: opts.path })} to locate the intended symbol without guessing line ranges.` : nextContextCall(opts.path, 1));
+		lines.push(languageForPath(opts.path) ? `Next context call: read_symbol ${JSON.stringify({ path: opts.path, mode: "outline" })} to locate the intended symbol without guessing line ranges.` : nextContextCall(opts.path, 1));
 	}
 
 	if (causes.length > 0) {

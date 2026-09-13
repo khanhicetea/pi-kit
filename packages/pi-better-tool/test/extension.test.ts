@@ -41,6 +41,9 @@ describe("extension registration", () => {
 		expect(symbolTool.description).toContain("48 KiB");
 		expect((symbolTool.promptGuidelines as string[]).every((guideline) => guideline.includes("read_symbol"))).toBe(true);
 		expect(symbolTool.parameters).toBeDefined();
+		const symbolSchema = symbolTool.parameters as { required?: string[]; properties: { mode?: { description?: string } } };
+		expect(symbolSchema.required).toContain("mode");
+		expect(symbolSchema.properties.mode?.description).toContain("provide symbol or line");
 		expect(typeof symbolTool.execute).toBe("function");
 		const importsTool = tools[2];
 		expect(importsTool.description).toContain("raw lines");

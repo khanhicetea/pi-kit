@@ -1,6 +1,6 @@
 {
 	"name": "@khanhicetea/pi-better-tool",
-	"version": "0.2.4",
+	"version": "0.2.5",
 	"description": "Context-aware tools for pi: safe edits, syntax-aware symbol reads, and raw source import-zone reads",
 	"type": "module",
 	"license": "MIT",

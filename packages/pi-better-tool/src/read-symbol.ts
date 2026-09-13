@@ -9,15 +9,18 @@ import { getLineSpans } from "./text.ts";
 
 export const readSymbolSchema = Type.Object({
 	path: Type.String({ minLength: 1, maxLength: 4096, description: "Local source file path (relative, absolute, @path, ~/path, or file URL)." }),
-	line: Type.Optional(Type.Integer({ minimum: 1, description: "Read the innermost symbol containing this 1-based line. Combine with symbol to disambiguate duplicate names." })),
+	mode: Type.Union([Type.Literal("symbol"), Type.Literal("outline")], { description: 'Required operation. Use "symbol" to read one declaration (and provide symbol or line); use "outline" only to list declaration names and ranges.' }),
+	line: Type.Optional(Type.Integer({ minimum: 1, description: 'With mode="symbol", read the innermost symbol containing this 1-based line. Combine with symbol to disambiguate duplicate names.' })),
 	column: Type.Optional(Type.Integer({ minimum: 1, description: "Optional 1-based UTF-16 column with line, to distinguish symbols on the same line." })),
-	symbol: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "Exact symbol name or qualified name, for example Server.run. Omit both symbol and line to list a symbol outline." })),
+	symbol: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: 'With mode="symbol", the exact symbol name or qualified name, for example Server.run. A symbol or line selector is required in symbol mode.' })),
 	parent: Type.Optional(Type.Integer({ minimum: 0, maximum: 20, description: "Move outward this many enclosing symbols after selection (default 0)." })),
-	context: Type.Optional(Type.Integer({ minimum: 0, maximum: 20, description: "Extra whole lines before and after the selected symbol (default 0)." })),
+	context: Type.Optional(Type.Integer({ minimum: 0, maximum: 20, description: "Extra whole lines before and after the selected symbol (default 0, max 20)." })),
 	offset: Type.Optional(Type.Integer({ minimum: 1, description: "1-based position within the selected symbol/context or outline, not a file line. Use the exact continuation call from a partial result." })),
 	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1800, description: "Maximum source lines (default 1000) or outline entries (default 50). Output also has a 48 KiB hard limit." })),
 });
-export type ReadSymbolInput = Static<typeof readSymbolSchema>;
+type RegisteredReadSymbolInput = Static<typeof readSymbolSchema>;
+/** mode stays optional here so stored calls from releases before explicit modes remain verifiable. */
+export type ReadSymbolInput = Omit<RegisteredReadSymbolInput, "mode"> & { mode?: RegisteredReadSymbolInput["mode"] };
 
 export interface VisibleSource {
 	startLine: number;
@@ -48,12 +51,15 @@ export function validateReadSymbolInput(input: ReadSymbolInput): void {
 		const value = input[key];
 		if (value !== undefined && (!Number.isSafeInteger(value) || value < min || value > max)) throw new Error(`read_symbol ${key} must be an integer from ${min} to ${max}.`);
 	}
+	if (input.mode !== undefined && input.mode !== "symbol" && input.mode !== "outline") throw new Error('read_symbol mode must be "symbol" or "outline".');
 	if (input.column !== undefined && input.line === undefined) throw new Error("read_symbol column requires line.");
-	if ((input.parent || input.context) && input.line === undefined && input.symbol === undefined) throw new Error("read_symbol parent/context requires a line or symbol selector; omit them to get an outline.");
+	if (input.mode === "symbol" && input.line === undefined && input.symbol === undefined) throw new Error('read_symbol mode="symbol" requires a symbol name or containing line.');
+	if (input.mode === "outline" && (input.line !== undefined || input.symbol !== undefined || input.parent !== undefined || input.context !== undefined)) throw new Error('read_symbol mode="outline" does not accept symbol, line, parent, or context.');
+	if ((input.parent || input.context) && input.line === undefined && input.symbol === undefined) throw new Error("read_symbol parent/context requires a line or symbol selector.");
 }
 
 function candidateLine(path: string, symbol: SourceSymbol): string {
-	return `- ${label(symbol.qualifiedName)} (${symbol.kind}), lines ${symbol.startLine}-${symbol.endLine}. ${callText({ path, line: symbol.startLine, column: symbol.startColumn, symbol: symbol.qualifiedName.length <= 256 ? symbol.qualifiedName : undefined })}`;
+	return `- ${label(symbol.qualifiedName)} (${symbol.kind}), lines ${symbol.startLine}-${symbol.endLine}. ${callText({ path, mode: "symbol", line: symbol.startLine, column: symbol.startColumn, symbol: symbol.qualifiedName.length <= 256 ? symbol.qualifiedName : undefined })}`;
 }
 
 /** Non-copyable preview for failed selection; never presented as a complete symbol. */
@@ -99,7 +105,7 @@ function selectSymbol(input: ReadSymbolInput, symbols: SourceSymbol[]): SourceSy
 			matches.length ? `Ambiguous symbol selection: ${matches.length} candidates. No symbol was selected.` : "No matching symbol. Names are exact and case-sensitive; no nearby symbol was selected automatically.",
 			...candidates.slice(0, 8).map((symbol) => candidateLine(input.path, symbol)),
 			...(candidates.length > 8 ? [`${candidates.length - 8} more candidates omitted.`] : []),
-			`Next: choose a candidate call above, or list the outline with ${callText({ path: input.path })}.`,
+			`Next: choose a candidate call above, or list the outline with ${callText({ path: input.path, mode: "outline" })}.`,
 		].join("\n"));
 	}
 	let selected = matches[0];
@@ -133,7 +139,7 @@ export async function buildSymbolRead(input: ReadSymbolInput, content: string, s
 	const snapshot = createHash("sha256").update(content).digest("hex");
 	const header = `Source ${label(input.path)} (${lines.length} lines). Snapshot sha256:${snapshot}`;
 	const offset = input.offset ?? 1;
-	if (input.line === undefined && input.symbol === undefined) {
+	if (input.mode === "outline" || (input.mode === undefined && input.line === undefined && input.symbol === undefined)) {
 		const total = index.symbols.length;
 		if (offset > Math.max(1, total)) throw new Error(`Outline offset=${offset} is beyond ${total} entries. Next: ${callText({ ...input, offset: Math.max(1, total - 49) })}`);
 		const entries: string[] = [];
@@ -201,11 +207,12 @@ export async function executeReadSymbol(input: ReadSymbolInput, signal: AbortSig
 export function registerReadSymbolTool(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "read_symbol", label: "read_symbol",
-		description: `Read a complete function, method, class, or type from a local source file by containing line or exact symbol name. Supports ${SUPPORTED_LANGUAGES}. With path only, lists a symbol outline. Includes enclosing names, exact source ranges, and actionable failure context. Output is bounded to 48 KiB/1950 lines; partial results include an exact continuation call. Does not replace read for ordinary text or images.`,
-		promptSnippet: "Read whole source symbols by line/name, or list a file's symbol outline",
+		description: `Read a complete function, method, class, or type from a local source file. Always set mode: use mode="symbol" with an exact symbol name or containing line; use mode="outline" only to list names and ranges. Supports ${SUPPORTED_LANGUAGES}. Includes enclosing names, exact source ranges, and actionable failure context. Output is bounded to 48 KiB/1950 lines; partial results include an exact continuation call. Does not replace read for ordinary text or images.`,
+		promptSnippet: "Read one whole source symbol by line/name; set mode=outline only to list declarations",
 		promptGuidelines: [
-			"Use read_symbol with path and line after grep/edit identifies a code location, instead of guessing successive read offsets to find the function boundary.",
-			"Use read_symbol with symbol for an exact name or qualified name; use path alone for an outline. Use parent to include an enclosing function or class.",
+			"Always set read_symbol mode. Use mode=\"symbol\" with a symbol name or containing line to read source; mode=\"outline\" only lists declarations and does not read their bodies.",
+			"Use read_symbol with mode=\"symbol\", path, and line after grep/edit identifies a code location, instead of guessing successive read offsets to find the function boundary.",
+			"Use read_symbol with mode=\"symbol\" and symbol for an exact name or qualified name. Use parent to include an enclosing function or class.",
 			"For read_symbol partial output, use the supplied continuation arguments. offset is relative to the selection, not a file line. Only displayed source is evidence for edit.",
 		],
 		parameters: readSymbolSchema,

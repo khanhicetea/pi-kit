@@ -3,7 +3,7 @@
 Context-aware tools for the [Pi coding agent](https://github.com/earendil-works/pi-mono):
 
 - **`edit`** replaces the built-in edit tool. Failures explain what failed, what was not written, and what to do next.
-- **`read_symbol`** reads a whole function, method, class, or type by containing line or exact name. With only a path, it gets a symbol outline.
+- **`read_symbol`** reads a whole function, method, class, or type by containing line or exact name. Its required `mode` makes symbol reads and outline listings explicit.
 - **`read_code_imports`** reads the first dependency import zone as exact raw source lines, including comments and blank lines between adjacent imports.
 - **`read` stays unchanged** for ordinary text, images, and explicit line ranges.
 
@@ -26,25 +26,25 @@ The root `package.json` also registers the extension. After local changes, use `
 After grep identifies a location:
 
 ```json
-{"path":"src/server.ts","line":142}
+{"path":"src/server.ts","mode":"symbol","line":142}
 ```
 
 Call `read_symbol` with an exact name instead:
 
 ```json
-{"path":"src/server.ts","symbol":"Server.handleRequest"}
+{"path":"src/server.ts","mode":"symbol","symbol":"Server.handleRequest"}
 ```
 
 Get the enclosing class or function:
 
 ```json
-{"path":"src/server.ts","line":142,"parent":1}
+{"path":"src/server.ts","mode":"symbol","line":142,"parent":1}
 ```
 
 Discover names and ranges without reading every body:
 
 ```json
-{"path":"src/server.ts"}
+{"path":"src/server.ts","mode":"outline"}
 ```
 
 ### Arguments
@@ -52,6 +52,7 @@ Discover names and ranges without reading every body:
 | Argument | Meaning |
 | --- | --- |
 | `path` | Local relative/absolute path; supports `@path`, `~/path`, and file URLs. |
+| `mode` | Required: `symbol` reads one declaration and requires `symbol` or `line`; `outline` only lists names and ranges. |
 | `line` | 1-based file line. Select the innermost declaration containing it. |
 | `column` | Optional 1-based UTF-16 column with `line`, to distinguish same-line symbols. |
 | `symbol` | Exact, case-sensitive name or qualified name such as `Server.run`. Combine with `line` for duplicate names. |
@@ -60,7 +61,7 @@ Discover names and ranges without reading every body:
 | `offset` | 1-based position **within the selection**, not a file line. For an outline, the entry position. |
 | `limit` | Maximum source lines (default 1000) or outline entries (default 50); maximum 1800. |
 
-Omit both `line` and `symbol` for an outline. Named selection never silently chooses the first duplicate. Line selection never silently chooses between same-line siblings. Candidate lists include concrete calls with names and positions.
+Set `mode` to `outline` for an outline. Named selection never silently chooses the first duplicate. Line selection never silently chooses between same-line siblings. Candidate lists include concrete calls with names and positions.
 
 ### Languages and boundaries
 

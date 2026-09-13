@@ -301,8 +301,8 @@ describe("formatEditFailure", () => {
 		if (result.ok) throw new Error("expected failure");
 		const message = formatEditFailure({ path: "a.ts", normalizedContent: content, edits, failure: result.failure });
 		expect(message).toContain("Batch status: 0/2 replacements written. Fix edits[1]");
-		expect(message).toContain('read_symbol {"path":"a.ts","line":1}');
-		expect(message).toContain('read_symbol {"path":"a.ts","line":3}');
+		expect(message).toContain('read_symbol {"path":"a.ts","mode":"symbol","line":1}');
+		expect(message).toContain('read_symbol {"path":"a.ts","mode":"symbol","line":3}');
 	});
 
 	it("warns when the intended replacement text already exists", () => {

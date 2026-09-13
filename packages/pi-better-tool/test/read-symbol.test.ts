@@ -200,6 +200,12 @@ describe("read_symbol output and recovery", () => {
 		expect(() => validateReadSymbolInput({ path: "a.ts", ...args })).toThrow();
 	});
 
+	it("requires an explicit selector for symbol mode and keeps legacy stored calls readable", async () => {
+		expect(() => validateReadSymbolInput({ path: "a.ts", mode: "symbol" })).toThrow(/requires a symbol name or containing line/);
+		expect(() => validateReadSymbolInput({ path: "a.ts", mode: "outline", line: 1 })).toThrow(/does not accept/);
+		expect((await buildSymbolRead({ path: "a.ts" }, source)).details.mode).toBe("outline");
+	});
+
 	it("honors cancellation before reading", async () => {
 		const controller = new AbortController(); controller.abort();
 		await expect(executeReadSymbol({ path: "missing.ts" }, controller.signal, { cwd })).rejects.toThrow(/abort/i);
