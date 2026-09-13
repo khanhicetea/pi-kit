@@ -35,7 +35,7 @@ describe("pi-tactician extension", () => {
 		const changed = handler({ systemPrompt: "base" }, ctx) as { systemPrompt: string };
 		expect(changed.systemPrompt).toContain("<tactician_system_prompt>");
 		expect(changed.systemPrompt).toContain(GUIDANCE_MARKER);
-		expect(changed.systemPrompt).toContain("If you spawn subagents, append this complete <tactician_system_prompt>...</tactician_system_prompt> block");
+		expect(changed.systemPrompt).toContain("If you start a subagent, append this");
 		expect(changed.systemPrompt).toContain("</tactician_system_prompt>");
 		expect(handler({ systemPrompt: changed.systemPrompt }, ctx)).toBeUndefined();
 	});
